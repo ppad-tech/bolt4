@@ -143,7 +143,7 @@ From BOLT4 spec, using session key 0x4141...41 (32 bytes of 0x41):
 ```
 hop 0 pubkey: 02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619
 hop 0 shared secret: 53eb63ea8a3fec3b3cd433b85cd62a4b145e1dda09391b348c4e1cd36a03ea66
-hop 0 blinding factor: 2ec2e5da605776054187180c226f3738...
+hop 0 blinding factor: 2ec2e5da605776054187180343287683aa6a51b4...
 ```
 
 Verify shared secret and blinding factor computations match spec.
