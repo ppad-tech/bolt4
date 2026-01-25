@@ -7,6 +7,7 @@ import qualified Data.ByteString as BS
 import qualified Data.ByteString.Base16 as B16
 import qualified Crypto.Curve.Secp256k1 as Secp256k1
 import Lightning.Protocol.BOLT4.Codec
+import Lightning.Protocol.BOLT4.Error
 import Lightning.Protocol.BOLT4.Prim
 import Lightning.Protocol.BOLT4.Process
 import Lightning.Protocol.BOLT4.Types
@@ -34,6 +35,9 @@ main = defaultMain $ testGroup "ppad-bolt4" [
       ]
   , testGroup "Process" [
         processTests
+      ]
+  , testGroup "Error" [
+        errorTests
       ]
   ]
 
@@ -348,7 +352,8 @@ testVersionValidation = testGroup "version validation" [
             }
       case process sessionKey packet BS.empty of
         Left (InvalidVersion v) -> v @?= 0x01
-        Left other -> assertFailure $ "expected InvalidVersion, got: " ++ show other
+        Left other -> assertFailure $ "expected InvalidVersion, got: "
+          ++ show other
         Right _ -> assertFailure "expected rejection, got success"
   , testCase "reject invalid version 0xFF" $ do
       let packet = OnionPacket
@@ -359,7 +364,8 @@ testVersionValidation = testGroup "version validation" [
             }
       case process sessionKey packet BS.empty of
         Left (InvalidVersion v) -> v @?= 0xFF
-        Left other -> assertFailure $ "expected InvalidVersion, got: " ++ show other
+        Left other -> assertFailure $ "expected InvalidVersion, got: "
+          ++ show other
         Right _ -> assertFailure "expected rejection, got success"
   ]
 
@@ -469,4 +475,170 @@ testProcessBasic = testGroup "basic processing" [
           hpAmtToForward (riPayload ri) @?= Just 1000
           hpOutgoingCltv (riPayload ri) @?= Just 500000
         Right (Forward _) -> assertFailure "expected Receive, got Forward"
+  ]
+
+-- Error tests -----------------------------------------------------------------
+
+errorTests :: TestTree
+errorTests = testGroup "error handling" [
+    testErrorConstruction
+  , testErrorRoundtrip
+  , testMultiHopWrapping
+  , testErrorAttribution
+  , testFailureMessageParsing
+  ]
+
+-- Shared secrets for testing (deterministic)
+testSecret1 :: SharedSecret
+testSecret1 = SharedSecret (BS.replicate 32 0x11)
+
+testSecret2 :: SharedSecret
+testSecret2 = SharedSecret (BS.replicate 32 0x22)
+
+testSecret3 :: SharedSecret
+testSecret3 = SharedSecret (BS.replicate 32 0x33)
+
+testSecret4 :: SharedSecret
+testSecret4 = SharedSecret (BS.replicate 32 0x44)
+
+-- Simple failure message for testing
+testFailure :: FailureMessage
+testFailure = FailureMessage IncorrectOrUnknownPaymentDetails BS.empty []
+
+testErrorConstruction :: TestTree
+testErrorConstruction = testCase "error packet construction" $ do
+  let errPacket = constructError testSecret1 testFailure
+      ErrorPacket bs = errPacket
+  -- Error packet should be at least minErrorPacketSize
+  assertBool "error packet >= 256 bytes" (BS.length bs >= minErrorPacketSize)
+
+testErrorRoundtrip :: TestTree
+testErrorRoundtrip = testCase "construct and unwrap roundtrip" $ do
+  let errPacket = constructError testSecret1 testFailure
+      result = unwrapError [testSecret1] errPacket
+  case result of
+    Attributed idx msg -> do
+      idx @?= 0
+      fmCode msg @?= IncorrectOrUnknownPaymentDetails
+    UnknownOrigin _ ->
+      assertFailure "Expected Attributed, got UnknownOrigin"
+
+testMultiHopWrapping :: TestTree
+testMultiHopWrapping = testGroup "multi-hop wrapping" [
+    testCase "3-hop route, error from hop 2 (final)" $ do
+      -- Route: origin -> hop0 -> hop1 -> hop2 (final, fails)
+      -- Error constructed at hop2, wrapped at hop1, wrapped at hop0
+      let secrets = [testSecret1, testSecret2, testSecret3]
+          -- Hop 2 constructs error
+          err0 = constructError testSecret3 testFailure
+          -- Hop 1 wraps
+          err1 = wrapError testSecret2 err0
+          -- Hop 0 wraps
+          err2 = wrapError testSecret1 err1
+          -- Origin unwraps
+          result = unwrapError secrets err2
+      case result of
+        Attributed idx msg -> do
+          idx @?= 2
+          fmCode msg @?= IncorrectOrUnknownPaymentDetails
+        UnknownOrigin _ ->
+          assertFailure "Expected Attributed, got UnknownOrigin"
+
+  , testCase "4-hop route, error from hop 1 (intermediate)" $ do
+      -- Route: origin -> hop0 -> hop1 (fails) -> hop2 -> hop3
+      let secrets = [testSecret1, testSecret2, testSecret3, testSecret4]
+          -- Hop 1 constructs error
+          err0 = constructError testSecret2 testFailure
+          -- Hop 0 wraps
+          err1 = wrapError testSecret1 err0
+          -- Origin unwraps
+          result = unwrapError secrets err1
+      case result of
+        Attributed idx msg -> do
+          idx @?= 1
+          fmCode msg @?= IncorrectOrUnknownPaymentDetails
+        UnknownOrigin _ ->
+          assertFailure "Expected Attributed, got UnknownOrigin"
+
+  , testCase "4-hop route, error from hop 0 (first)" $ do
+      let secrets = [testSecret1, testSecret2, testSecret3, testSecret4]
+          -- Hop 0 constructs error (no wrapping needed)
+          err0 = constructError testSecret1 testFailure
+          -- Origin unwraps
+          result = unwrapError secrets err0
+      case result of
+        Attributed idx msg -> do
+          idx @?= 0
+          fmCode msg @?= IncorrectOrUnknownPaymentDetails
+        UnknownOrigin _ ->
+          assertFailure "Expected Attributed, got UnknownOrigin"
+  ]
+
+testErrorAttribution :: TestTree
+testErrorAttribution = testGroup "error attribution" [
+    testCase "wrong secrets gives UnknownOrigin" $ do
+      let err = constructError testSecret1 testFailure
+          wrongSecrets = [testSecret2, testSecret3]
+          result = unwrapError wrongSecrets err
+      case result of
+        UnknownOrigin _ -> return ()
+        Attributed _ _ ->
+          assertFailure "Expected UnknownOrigin with wrong secrets"
+
+  , testCase "empty secrets gives UnknownOrigin" $ do
+      let err = constructError testSecret1 testFailure
+          result = unwrapError [] err
+      case result of
+        UnknownOrigin _ -> return ()
+        Attributed _ _ ->
+          assertFailure "Expected UnknownOrigin with empty secrets"
+
+  , testCase "correct attribution with multiple failures" $ do
+      -- Test different failure codes
+      let failures =
+            [ (TemporaryNodeFailure, testSecret1)
+            , (PermanentNodeFailure, testSecret2)
+            , (InvalidOnionHmac, testSecret3)
+            ]
+      mapM_ (\(code, secret) -> do
+        let failure = FailureMessage code BS.empty []
+            err = constructError secret failure
+            result = unwrapError [secret] err
+        case result of
+          Attributed 0 msg -> fmCode msg @?= code
+          _ -> assertFailure $ "Failed for code: " ++ show code
+        ) failures
+  ]
+
+testFailureMessageParsing :: TestTree
+testFailureMessageParsing = testGroup "failure message parsing" [
+    testCase "code with data" $ do
+      -- AmountBelowMinimum typically includes channel update data
+      let failData = BS.replicate 10 0xAB
+          failure = FailureMessage AmountBelowMinimum failData []
+          err = constructError testSecret1 failure
+          result = unwrapError [testSecret1] err
+      case result of
+        Attributed 0 msg -> do
+          fmCode msg @?= AmountBelowMinimum
+          fmData msg @?= failData
+        _ -> assertFailure "Expected Attributed"
+
+  , testCase "various failure codes roundtrip" $ do
+      let codes =
+            [ InvalidRealm
+            , TemporaryNodeFailure
+            , PermanentNodeFailure
+            , InvalidOnionHmac
+            , TemporaryChannelFailure
+            , IncorrectOrUnknownPaymentDetails
+            ]
+      mapM_ (\code -> do
+        let failure = FailureMessage code BS.empty []
+            err = constructError testSecret1 failure
+            result = unwrapError [testSecret1] err
+        case result of
+          Attributed 0 msg -> fmCode msg @?= code
+          _ -> assertFailure $ "Failed for code: " ++ show code
+        ) codes
   ]
