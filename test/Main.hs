@@ -3,7 +3,10 @@
 module Main where
 
 import qualified Data.ByteString as BS
+import qualified Data.ByteString.Base16 as B16
+import qualified Crypto.Curve.Secp256k1 as Secp256k1
 import Lightning.Protocol.BOLT4.Codec
+import Lightning.Protocol.BOLT4.Prim
 import Lightning.Protocol.BOLT4.Types
 import Test.Tasty
 import Test.Tasty.HUnit
@@ -11,7 +14,10 @@ import Test.Tasty.QuickCheck
 
 main :: IO ()
 main = defaultMain $ testGroup "ppad-bolt4" [
-    testGroup "BigSize" [
+    testGroup "Prim" [
+        primTests
+      ]
+  , testGroup "BigSize" [
         bigsizeTests
       , bigsizeRoundtripProp
       ]
@@ -173,4 +179,145 @@ onionPacketTests = testGroup "encoding/decoding" [
   , testCase "reject wrong size" $ do
       let decoded = decodeOnionPacket (BS.replicate 1000 0x00)
       decoded @?= Nothing
+  ]
+
+-- Prim tests -----------------------------------------------------------------
+
+-- BOLT4 spec test vectors using session key 0x4141...41 (32 bytes of 0x41).
+sessionKey :: BS.ByteString
+sessionKey = BS.replicate 32 0x41
+
+hop0PubKeyHex :: BS.ByteString
+hop0PubKeyHex =
+  "02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619"
+
+hop0SharedSecretHex :: BS.ByteString
+hop0SharedSecretHex =
+  "53eb63ea8a3fec3b3cd433b85cd62a4b145e1dda09391b348c4e1cd36a03ea66"
+
+hop0BlindingFactorHex :: BS.ByteString
+hop0BlindingFactorHex =
+  "2ec2e5da605776054187180343287683aa6a51b4b1c04d6dd49c45d8cffb3c36"
+
+-- Parse hex helper
+fromHex :: BS.ByteString -> BS.ByteString
+fromHex h = case B16.decode h of
+  Just bs -> bs
+  Nothing -> error "fromHex: invalid hex"
+
+primTests :: TestTree
+primTests = testGroup "cryptographic primitives" [
+    testSharedSecret
+  , testBlindingFactor
+  , testKeyDerivation
+  , testBlindPubKey
+  , testGenerateStream
+  , testHmacOperations
+  ]
+
+testSharedSecret :: TestTree
+testSharedSecret = testCase "computeSharedSecret (BOLT4 spec hop 0)" $ do
+  let Just pubKey = Secp256k1.parse_point (fromHex hop0PubKeyHex)
+  case computeSharedSecret sessionKey pubKey of
+    Nothing -> assertFailure "computeSharedSecret returned Nothing"
+    Just (SharedSecret computed) -> do
+      let expected = fromHex hop0SharedSecretHex
+      computed @?= expected
+
+testBlindingFactor :: TestTree
+testBlindingFactor = testCase "computeBlindingFactor (BOLT4 spec hop 0)" $ do
+  let Just sk = Secp256k1.roll32 sessionKey
+      Just ephemPubKey = Secp256k1.derive_pub sk
+      Just nodePubKey = Secp256k1.parse_point (fromHex hop0PubKeyHex)
+  case computeSharedSecret sessionKey nodePubKey of
+    Nothing -> assertFailure "computeSharedSecret returned Nothing"
+    Just sharedSecret -> do
+      let BlindingFactor computed =
+            computeBlindingFactor ephemPubKey sharedSecret
+          expected = fromHex hop0BlindingFactorHex
+      computed @?= expected
+
+testKeyDerivation :: TestTree
+testKeyDerivation = testGroup "key derivation" [
+    testCase "deriveRho produces 32 bytes" $ do
+      let ss = SharedSecret (BS.replicate 32 0)
+          DerivedKey rho = deriveRho ss
+      BS.length rho @?= 32
+  , testCase "deriveMu produces 32 bytes" $ do
+      let ss = SharedSecret (BS.replicate 32 0)
+          DerivedKey mu = deriveMu ss
+      BS.length mu @?= 32
+  , testCase "deriveUm produces 32 bytes" $ do
+      let ss = SharedSecret (BS.replicate 32 0)
+          DerivedKey um = deriveUm ss
+      BS.length um @?= 32
+  , testCase "derivePad produces 32 bytes" $ do
+      let ss = SharedSecret (BS.replicate 32 0)
+          DerivedKey pad = derivePad ss
+      BS.length pad @?= 32
+  , testCase "deriveAmmag produces 32 bytes" $ do
+      let ss = SharedSecret (BS.replicate 32 0)
+          DerivedKey ammag = deriveAmmag ss
+      BS.length ammag @?= 32
+  , testCase "different key types produce different results" $ do
+      let ss = SharedSecret (BS.replicate 32 0x42)
+          DerivedKey rho = deriveRho ss
+          DerivedKey mu = deriveMu ss
+          DerivedKey um = deriveUm ss
+      assertBool "rho /= mu" (rho /= mu)
+      assertBool "mu /= um" (mu /= um)
+      assertBool "rho /= um" (rho /= um)
+  ]
+
+testBlindPubKey :: TestTree
+testBlindPubKey = testGroup "key blinding" [
+    testCase "blindPubKey produces valid key" $ do
+      let Just sk = Secp256k1.roll32 sessionKey
+          Just pubKey = Secp256k1.derive_pub sk
+          bf = BlindingFactor (fromHex hop0BlindingFactorHex)
+      case blindPubKey pubKey bf of
+        Nothing -> assertFailure "blindPubKey returned Nothing"
+        Just _blinded -> return ()
+  , testCase "blindSecKey produces valid key" $ do
+      let bf = BlindingFactor (fromHex hop0BlindingFactorHex)
+      case blindSecKey sessionKey bf of
+        Nothing -> assertFailure "blindSecKey returned Nothing"
+        Just _blinded -> return ()
+  ]
+
+testGenerateStream :: TestTree
+testGenerateStream = testGroup "generateStream" [
+    testCase "produces correct length" $ do
+      let dk = DerivedKey (BS.replicate 32 0)
+          stream = generateStream dk 100
+      BS.length stream @?= 100
+  , testCase "1300-byte stream for hop_payloads" $ do
+      let dk = DerivedKey (BS.replicate 32 0x42)
+          stream = generateStream dk 1300
+      BS.length stream @?= 1300
+  , testCase "deterministic output" $ do
+      let dk = DerivedKey (BS.replicate 32 0x55)
+          stream1 = generateStream dk 64
+          stream2 = generateStream dk 64
+      stream1 @?= stream2
+  ]
+
+testHmacOperations :: TestTree
+testHmacOperations = testGroup "HMAC operations" [
+    testCase "computeHmac produces 32 bytes" $ do
+      let dk = DerivedKey (BS.replicate 32 0)
+          hmac = computeHmac dk "payloads" "assocdata"
+      BS.length hmac @?= 32
+  , testCase "verifyHmac succeeds for matching" $ do
+      let dk = DerivedKey (BS.replicate 32 0)
+          hmac = computeHmac dk "payloads" "assocdata"
+      assertBool "verifyHmac should succeed" (verifyHmac hmac hmac)
+  , testCase "verifyHmac fails for different" $ do
+      let dk = DerivedKey (BS.replicate 32 0)
+          hmac1 = computeHmac dk "payloads1" "assocdata"
+          hmac2 = computeHmac dk "payloads2" "assocdata"
+      assertBool "verifyHmac should fail" (not $ verifyHmac hmac1 hmac2)
+  , testCase "verifyHmac fails for different lengths" $ do
+      assertBool "verifyHmac should fail"
+        (not $ verifyHmac "short" "different length")
   ]
