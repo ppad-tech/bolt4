@@ -48,6 +48,7 @@ import Data.Bits (xor)
 import qualified Data.ByteString as BS
 import qualified Data.List as L
 import Data.Word (Word8, Word32)
+import qualified Numeric.Montgomery.Secp256k1.Scalar as S
 
 -- | 32-byte shared secret derived from ECDH.
 newtype SharedSecret = SharedSecret BS.ByteString
@@ -157,6 +158,7 @@ blindPubKey !pub (BlindingFactor !bf) = do
 --
 -- @new_seckey = seckey * blinding_factor (mod q)@
 --
+-- Uses Montgomery multiplication from ppad-fixed for efficiency.
 -- Takes a 32-byte secret key and returns a 32-byte blinded secret key.
 blindSecKey
   :: BS.ByteString     -- ^ 32-byte secret key
@@ -166,29 +168,14 @@ blindSecKey !secBs (BlindingFactor !bf)
   | BS.length secBs /= 32 = Nothing
   | BS.length bf /= 32 = Nothing
   | otherwise =
-      -- Convert to Integer, multiply, reduce mod q, convert back
-      let !secInt = bsToInteger secBs
-          !bfInt = bsToInteger bf
-          -- secp256k1 curve order
-          !qInt = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141
-          !resultInt = (secInt * bfInt) `mod` qInt
-          !resultBs = integerToBS32 resultInt
-      in  Just resultBs
+      let !secW = Secp256k1.unsafe_roll32 secBs
+          !bfW = Secp256k1.unsafe_roll32 bf
+          !secM = S.to secW
+          !bfM = S.to bfW
+          !resultM = S.mul secM bfM
+          !resultW = S.retr resultM
+      in  Just $! Secp256k1.unroll32 resultW
 {-# INLINE blindSecKey #-}
-
--- Convert big-endian ByteString to Integer.
-bsToInteger :: BS.ByteString -> Integer
-bsToInteger = BS.foldl' (\acc b -> acc * 256 + fromIntegral b) 0
-{-# INLINE bsToInteger #-}
-
--- Convert Integer to 32-byte big-endian ByteString.
-integerToBS32 :: Integer -> BS.ByteString
-integerToBS32 n = BS.pack (go 32 n [])
-  where
-    go :: Int -> Integer -> [Word8] -> [Word8]
-    go 0 _ acc = acc
-    go i x acc = go (i - 1) (x `div` 256) (fromIntegral (x `mod` 256) : acc)
-{-# INLINE integerToBS32 #-}
 
 -- Stream generation ---------------------------------------------------------
 

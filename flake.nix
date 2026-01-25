@@ -12,9 +12,13 @@
     ppad-chacha.url = "path:/Users/jtobin/src/ppad/chacha";
     ppad-chacha.inputs.ppad-nixpkgs.follows = "ppad-nixpkgs";
 
+    ppad-fixed.url = "path:/Users/jtobin/src/ppad/fixed";
+    ppad-fixed.inputs.ppad-nixpkgs.follows = "ppad-nixpkgs";
+
     ppad-secp256k1.url = "path:/Users/jtobin/src/ppad/secp256k1";
     ppad-secp256k1.inputs.ppad-nixpkgs.follows = "ppad-nixpkgs";
     ppad-secp256k1.inputs.ppad-sha256.follows = "ppad-sha256";
+    ppad-secp256k1.inputs.ppad-fixed.follows = "ppad-fixed";
 
     ppad-sha256.url = "path:/Users/jtobin/src/ppad/sha256";
     ppad-sha256.inputs.ppad-nixpkgs.follows = "ppad-nixpkgs";
@@ -26,7 +30,7 @@
   };
 
   outputs = { self, nixpkgs, flake-utils, ppad-nixpkgs
-            , ppad-aead, ppad-base16, ppad-chacha
+            , ppad-aead, ppad-base16, ppad-chacha, ppad-fixed
             , ppad-secp256k1, ppad-sha256
             }:
     flake-utils.lib.eachDefaultSystem (system:
@@ -56,6 +60,12 @@
             (hlib.enableCabalFlag chacha "llvm")
             [ llvm clang ];
 
+        fixed = ppad-fixed.packages.${system}.default;
+        fixed-llvm =
+          hlib.addBuildTools
+            (hlib.enableCabalFlag fixed "llvm")
+            [ llvm clang ];
+
         secp256k1 = ppad-secp256k1.packages.${system}.default;
         secp256k1-llvm =
           hlib.addBuildTools
@@ -72,12 +82,14 @@
           ppad-aead = aead-llvm;
           ppad-base16 = base16-llvm;
           ppad-chacha = chacha-llvm;
+          ppad-fixed = fixed-llvm;
           ppad-secp256k1 = secp256k1-llvm;
           ppad-sha256 = sha256-llvm;
           ${lib} = new.callCabal2nix lib ./. {
             ppad-aead = new.ppad-aead;
             ppad-base16 = new.ppad-base16;
             ppad-chacha = new.ppad-chacha;
+            ppad-fixed = new.ppad-fixed;
             ppad-secp256k1 = new.ppad-secp256k1;
             ppad-sha256 = new.ppad-sha256;
           };

@@ -35,13 +35,22 @@ module Lightning.Protocol.BOLT4.Codec (
     -- * Failure messages
   , encodeFailureMessage
   , decodeFailureMessage
+
+    -- * Internal helpers (for Blinding)
+  , toStrict
+  , word16BE
+  , word32BE
+  , encodeWord64TU
+  , decodeWord64TU
+  , encodeWord32TU
+  , decodeWord32TU
   ) where
 
 import Data.Bits (shiftL, shiftR, (.&.))
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Builder as B
 import qualified Data.ByteString.Lazy as BL
-import Data.Word (Word8, Word16, Word32, Word64)
+import Data.Word (Word16, Word32, Word64)
 import Lightning.Protocol.BOLT4.Types
 
 -- BigSize encoding ---------------------------------------------------------

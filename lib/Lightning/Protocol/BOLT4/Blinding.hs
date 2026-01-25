@@ -42,14 +42,16 @@ module Lightning.Protocol.BOLT4.Blinding (
 import qualified Crypto.AEAD.ChaCha20Poly1305 as AEAD
 import qualified Crypto.Curve.Secp256k1 as Secp256k1
 import qualified Crypto.Hash.SHA256 as SHA256
-import Data.Bits (shiftL)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Builder as B
-import qualified Data.ByteString.Lazy as BL
-import Data.Word (Word8, Word16, Word32, Word64)
+import Data.Word (Word16, Word32, Word64)
+import qualified Numeric.Montgomery.Secp256k1.Scalar as S
 import Lightning.Protocol.BOLT4.Codec
   ( encodeShortChannelId, decodeShortChannelId
   , encodeTlvStream, decodeTlvStream
+  , toStrict, word16BE, word32BE
+  , encodeWord64TU, decodeWord64TU
+  , encodeWord32TU, decodeWord32TU
   )
 import Lightning.Protocol.BOLT4.Prim (SharedSecret(..), DerivedKey(..))
 import Lightning.Protocol.BOLT4.Types (ShortChannelId(..), TlvRecord(..))
@@ -107,10 +109,10 @@ data BlindingError
 
 -- | Derive rho key for encrypting hop data.
 --
--- @rho = HMAC-SHA256(key="blinded_node_id", data=shared_secret)@
+-- @rho = HMAC-SHA256(key="rho", data=shared_secret)@
 deriveBlindingRho :: SharedSecret -> DerivedKey
 deriveBlindingRho (SharedSecret !ss) =
-  let SHA256.MAC !result = SHA256.hmac "blinded_node_id" ss
+  let SHA256.MAC !result = SHA256.hmac "rho" ss
   in  DerivedKey result
 {-# INLINE deriveBlindingRho #-}
 
@@ -170,7 +172,7 @@ encryptHopData (DerivedKey !rho) !hopData =
   let !plaintext = encodeBlindedHopData hopData
       !nonce = BS.replicate 12 0
   in  case AEAD.encrypt BS.empty rho nonce plaintext of
-        Left _ -> BS.empty  -- Should not happen with valid key
+        Left e -> error $ "encryptHopData: unexpected AEAD error: " ++ show e
         Right (!ciphertext, !mac) -> ciphertext <> mac
 {-# INLINE encryptHopData #-}
 
@@ -372,94 +374,18 @@ processBlindedHop !nodeSecKey !pathKey !encData = do
       maybe (Left InvalidPathKey) Right (nextPathKey pathKey ss)
   Right (hopData, nextKey)
 
--- Helper functions ----------------------------------------------------------
+-- Scalar multiplication -----------------------------------------------------
 
--- | Convert Builder to strict ByteString.
-toStrict :: B.Builder -> BS.ByteString
-toStrict = BL.toStrict . B.toLazyByteString
-{-# INLINE toStrict #-}
-
--- | Decode big-endian Word16.
-word16BE :: BS.ByteString -> Word16
-word16BE !bs =
-  let !b0 = fromIntegral (BS.index bs 0) :: Word16
-      !b1 = fromIntegral (BS.index bs 1) :: Word16
-  in  (b0 `shiftL` 8) + b1
-{-# INLINE word16BE #-}
-
--- | Decode big-endian Word32.
-word32BE :: BS.ByteString -> Word32
-word32BE !bs =
-  let !b0 = fromIntegral (BS.index bs 0) :: Word32
-      !b1 = fromIntegral (BS.index bs 1) :: Word32
-      !b2 = fromIntegral (BS.index bs 2) :: Word32
-      !b3 = fromIntegral (BS.index bs 3) :: Word32
-  in  (b0 `shiftL` 24) + (b1 `shiftL` 16) + (b2 `shiftL` 8) + b3
-{-# INLINE word32BE #-}
-
--- | Encode Word64 as truncated unsigned (minimal bytes).
-encodeWord64TU :: Word64 -> BS.ByteString
-encodeWord64TU !n
-  | n == 0 = BS.empty
-  | otherwise = BS.dropWhile (== 0) (toStrict (B.word64BE n))
-{-# INLINE encodeWord64TU #-}
-
--- | Decode truncated unsigned to Word64.
-decodeWord64TU :: BS.ByteString -> Maybe Word64
-decodeWord64TU !bs
-  | BS.null bs = Just 0
-  | BS.length bs > 8 = Nothing
-  | not (BS.null bs) && BS.index bs 0 == 0 = Nothing  -- Non-canonical
-  | otherwise = Just (go 0 bs)
-  where
-    go :: Word64 -> BS.ByteString -> Word64
-    go !acc !b = case BS.uncons b of
-      Nothing -> acc
-      Just (x, rest) -> go ((acc `shiftL` 8) + fromIntegral x) rest
-{-# INLINE decodeWord64TU #-}
-
--- | Encode Word32 as truncated unsigned.
-encodeWord32TU :: Word32 -> BS.ByteString
-encodeWord32TU !n
-  | n == 0 = BS.empty
-  | otherwise = BS.dropWhile (== 0) (toStrict (B.word32BE n))
-{-# INLINE encodeWord32TU #-}
-
--- | Decode truncated unsigned to Word32.
-decodeWord32TU :: BS.ByteString -> Maybe Word32
-decodeWord32TU !bs
-  | BS.null bs = Just 0
-  | BS.length bs > 4 = Nothing
-  | not (BS.null bs) && BS.index bs 0 == 0 = Nothing  -- Non-canonical
-  | otherwise = Just (go 0 bs)
-  where
-    go :: Word32 -> BS.ByteString -> Word32
-    go !acc !b = case BS.uncons b of
-      Nothing -> acc
-      Just (x, rest) -> go ((acc `shiftL` 8) + fromIntegral x) rest
-{-# INLINE decodeWord32TU #-}
-
--- | Multiply two secret keys mod curve order q.
+-- | Multiply two 32-byte scalars mod curve order q.
+--
+-- Uses Montgomery multiplication from ppad-fixed for efficiency.
 mulSecKey :: BS.ByteString -> BS.ByteString -> BS.ByteString
 mulSecKey !a !b =
-  let !aInt = bsToInteger a
-      !bInt = bsToInteger b
-      -- secp256k1 curve order
-      !qInt = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141
-      !resultInt = (aInt * bInt) `mod` qInt
-  in  integerToBS32 resultInt
+  let !aW = Secp256k1.unsafe_roll32 a
+      !bW = Secp256k1.unsafe_roll32 b
+      !aM = S.to aW
+      !bM = S.to bW
+      !resultM = S.mul aM bM
+      !resultW = S.retr resultM
+  in  Secp256k1.unroll32 resultW
 {-# INLINE mulSecKey #-}
-
--- Convert big-endian ByteString to Integer.
-bsToInteger :: BS.ByteString -> Integer
-bsToInteger = BS.foldl' (\acc b -> acc * 256 + fromIntegral b) 0
-{-# INLINE bsToInteger #-}
-
--- Convert Integer to 32-byte big-endian ByteString.
-integerToBS32 :: Integer -> BS.ByteString
-integerToBS32 n = BS.pack (go 32 n [])
-  where
-    go :: Int -> Integer -> [Word8] -> [Word8]
-    go 0 _ acc = acc
-    go i x acc = go (i - 1) (x `div` 256) (fromIntegral (x `mod` 256) : acc)
-{-# INLINE integerToBS32 #-}

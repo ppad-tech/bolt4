@@ -297,35 +297,28 @@
     "ppad-fixed_2": {
       "inputs": {
         "flake-utils": [
-          "ppad-secp256k1",
           "ppad-fixed",
           "ppad-nixpkgs",
           "flake-utils"
         ],
         "nixpkgs": [
-          "ppad-secp256k1",
           "ppad-fixed",
           "ppad-nixpkgs",
           "nixpkgs"
         ],
         "ppad-nixpkgs": [
-          "ppad-secp256k1",
           "ppad-nixpkgs"
         ]
       },
       "locked": {
-        "lastModified": 1767278248,
-        "narHash": "sha256-ynF6Tyew83dDr3dFWdTdgK3N5WEkLSCQ/uHHTxb5J1s=",
-        "ref": "master",
-        "rev": "ae6f5d732d69e6e2bb70ea9da18e2a8060ca9aeb",
-        "revCount": 290,
-        "type": "git",
-        "url": "git://git.ppad.tech/fixed.git"
+        "lastModified": 1768121142,
+        "narHash": "sha256-Pqc0bQLTrWSSy/9AdIpDTqppbxKemFP8Msc9pFnt0Vs=",
+        "path": "/Users/jtobin/src/ppad/fixed",
+        "type": "path"
       },
       "original": {
-        "ref": "master",
-        "type": "git",
-        "url": "git://git.ppad.tech/fixed.git"
+        "path": "/Users/jtobin/src/ppad/fixed",
+        "type": "path"
       }
     },
     "ppad-hmac-drbg": {
@@ -441,7 +434,9 @@
           "nixpkgs"
         ],
         "ppad-base16": "ppad-base16_4",
-        "ppad-fixed": "ppad-fixed_2",
+        "ppad-fixed": [
+          "ppad-fixed"
+        ],
         "ppad-hmac-drbg": "ppad-hmac-drbg",
         "ppad-nixpkgs": [
           "ppad-nixpkgs"
@@ -541,6 +536,7 @@
         "ppad-aead": "ppad-aead",
         "ppad-base16": "ppad-base16_2",
         "ppad-chacha": "ppad-chacha",
+        "ppad-fixed": "ppad-fixed_2",
         "ppad-nixpkgs": "ppad-nixpkgs",
         "ppad-secp256k1": "ppad-secp256k1",
         "ppad-sha256": "ppad-sha256"
