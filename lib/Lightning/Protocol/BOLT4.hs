@@ -1,8 +1,4 @@
 {-# OPTIONS_HADDOCK prune #-}
-{-# LANGUAGE BangPatterns #-}
-{-# LANGUAGE DeriveGeneric #-}
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE RecordWildCards #-}
 
 -- |
 -- Module: Lightning.Protocol.BOLT4
@@ -11,13 +7,18 @@
 -- Maintainer: Jared Tobin <jared@ppad.tech>
 --
 -- BOLT4 onion routing for the Lightning Network.
+--
+-- This module re-exports the public interface from submodules.
 
 module Lightning.Protocol.BOLT4 (
-  -- placeholder exports
+    -- * Re-exports
+    module Lightning.Protocol.BOLT4.Blinding
+  , module Lightning.Protocol.BOLT4.Codec
+  , module Lightning.Protocol.BOLT4.Prim
+  , module Lightning.Protocol.BOLT4.Types
   ) where
 
-import qualified Data.ByteString as BS
-
--- XX placeholder
-_placeholder :: BS.ByteString -> BS.ByteString
-_placeholder = id
+import Lightning.Protocol.BOLT4.Blinding
+import Lightning.Protocol.BOLT4.Codec
+import Lightning.Protocol.BOLT4.Prim
+import Lightning.Protocol.BOLT4.Types

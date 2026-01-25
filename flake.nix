@@ -2,6 +2,10 @@
   description = "A Haskell implementation of BOLT4 (onion routing).";
 
   inputs = {
+    ppad-aead.url = "path:/Users/jtobin/src/ppad/aead";
+    ppad-aead.inputs.ppad-nixpkgs.follows = "ppad-nixpkgs";
+    ppad-aead.inputs.ppad-chacha.follows = "ppad-chacha";
+
     ppad-base16.url = "path:/Users/jtobin/src/ppad/base16";
     ppad-base16.inputs.ppad-nixpkgs.follows = "ppad-nixpkgs";
 
@@ -22,7 +26,7 @@
   };
 
   outputs = { self, nixpkgs, flake-utils, ppad-nixpkgs
-            , ppad-base16, ppad-chacha
+            , ppad-aead, ppad-base16, ppad-chacha
             , ppad-secp256k1, ppad-sha256
             }:
     flake-utils.lib.eachDefaultSystem (system:
@@ -33,6 +37,12 @@
         hlib  = pkgs.haskell.lib;
         llvm  = pkgs.llvmPackages_19.llvm;
         clang = pkgs.llvmPackages_19.clang;
+
+        aead = ppad-aead.packages.${system}.default;
+        aead-llvm =
+          hlib.addBuildTools
+            (hlib.enableCabalFlag aead "llvm")
+            [ llvm clang ];
 
         base16 = ppad-base16.packages.${system}.default;
         base16-llvm =
@@ -59,11 +69,13 @@
             [ llvm clang ];
 
         hpkgs = pkgs.haskell.packages.ghc910.extend (new: old: {
+          ppad-aead = aead-llvm;
           ppad-base16 = base16-llvm;
           ppad-chacha = chacha-llvm;
           ppad-secp256k1 = secp256k1-llvm;
           ppad-sha256 = sha256-llvm;
           ${lib} = new.callCabal2nix lib ./. {
+            ppad-aead = new.ppad-aead;
             ppad-base16 = new.ppad-base16;
             ppad-chacha = new.ppad-chacha;
             ppad-secp256k1 = new.ppad-secp256k1;

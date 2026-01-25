@@ -6,6 +6,8 @@ import Data.Bits (xor)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Base16 as B16
 import qualified Crypto.Curve.Secp256k1 as Secp256k1
+import Data.Word (Word8)
+import Lightning.Protocol.BOLT4.Blinding
 import Lightning.Protocol.BOLT4.Codec
 import Lightning.Protocol.BOLT4.Construct
 import Lightning.Protocol.BOLT4.Error
@@ -42,6 +44,14 @@ main = defaultMain $ testGroup "ppad-bolt4" [
       ]
   , testGroup "Error" [
         errorTests
+      ]
+  , testGroup "Blinding" [
+        blindingKeyDerivationTests
+      , blindingEphemeralKeyTests
+      , blindingTlvTests
+      , blindingEncryptionTests
+      , blindingCreatePathTests
+      , blindingProcessHopTests
       ]
   ]
 
@@ -87,11 +97,9 @@ bigsizeTests = testGroup "boundary values" [
             BS.pack [0xFF, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00]
       result @?= Just (0x100000000, BS.empty)
   , testCase "reject non-canonical 0xFD encoding of small value" $ do
-      -- 0x00FC encoded as 0xFD 0x00 0xFC should be rejected
       let result = decodeBigSize (BS.pack [0xFD, 0x00, 0xFC])
       result @?= Nothing
   , testCase "reject non-canonical 0xFE encoding of small value" $ do
-      -- 0x0000FFFF encoded with 0xFE should be rejected
       let result = decodeBigSize (BS.pack [0xFE, 0x00, 0x00, 0xFF, 0xFF])
       result @?= Nothing
   , testCase "bigSizeLen" $ do
@@ -128,7 +136,6 @@ tlvTests = testGroup "encoding/decoding" [
           decoded = decodeTlvStream encoded
       decoded @?= Just recs
   , testCase "reject out-of-order types" $ do
-      -- Manually construct out-of-order stream
       let rec1 = encodeTlv (TlvRecord 4 (BS.pack [0x01]))
           rec2 = encodeTlv (TlvRecord 2 (BS.pack [0x02]))
           badStream = rec1 <> rec2
@@ -156,7 +163,6 @@ sciTests = testGroup "encoding/decoding" [
       let decoded = decodeShortChannelId encoded
       decoded @?= Just sci
   , testCase "maximum values" $ do
-      -- Max 3-byte block (0xFFFFFF), max 3-byte tx (0xFFFFFF), max output
       let sci = ShortChannelId 0xFFFFFF 0xFFFFFF 0xFFFF
           encoded = encodeShortChannelId sci
       BS.length encoded @?= 8
@@ -194,9 +200,8 @@ onionPacketTests = testGroup "encoding/decoding" [
       decoded @?= Nothing
   ]
 
--- Prim tests -----------------------------------------------------------------
+-- Prim tests ---------------------------------------------------------------
 
--- BOLT4 spec test vectors using session key 0x4141...41 (32 bytes of 0x41).
 sessionKey :: BS.ByteString
 sessionKey = BS.replicate 32 0x41
 
@@ -212,7 +217,6 @@ hop0BlindingFactorHex :: BS.ByteString
 hop0BlindingFactorHex =
   "2ec2e5da605776054187180343287683aa6a51b4b1c04d6dd49c45d8cffb3c36"
 
--- Parse hex helper
 fromHex :: BS.ByteString -> BS.ByteString
 fromHex h = case B16.decode h of
   Just bs -> bs
@@ -793,4 +797,364 @@ testFailureMessageParsing = testGroup "failure message parsing" [
           Attributed 0 msg -> fmCode msg @?= code
           _ -> assertFailure $ "Failed for code: " ++ show code
         ) codes
+  ]
+
+-- Blinding tests -----------------------------------------------------------
+
+-- Test data setup
+
+testSeed :: BS.ByteString
+testSeed = BS.pack [1..32]
+
+makeSecKey :: Word8 -> BS.ByteString
+makeSecKey seed = BS.pack $ replicate 31 0x00 ++ [seed]
+
+makePubKey :: Word8 -> Maybe Secp256k1.Projective
+makePubKey seed = do
+  sk <- Secp256k1.roll32 (makeSecKey seed)
+  Secp256k1.derive_pub sk
+
+testNodeSecKey1, testNodeSecKey2, testNodeSecKey3 :: BS.ByteString
+testNodeSecKey1 = makeSecKey 0x11
+testNodeSecKey2 = makeSecKey 0x22
+testNodeSecKey3 = makeSecKey 0x33
+
+testNodePubKey1, testNodePubKey2, testNodePubKey3 :: Secp256k1.Projective
+Just testNodePubKey1 = makePubKey 0x11
+Just testNodePubKey2 = makePubKey 0x22
+Just testNodePubKey3 = makePubKey 0x33
+
+testSharedSecretBS :: SharedSecret
+testSharedSecretBS = SharedSecret (BS.pack [0x42..0x61])
+
+emptyHopData :: BlindedHopData
+emptyHopData = BlindedHopData
+  Nothing Nothing Nothing Nothing Nothing Nothing Nothing Nothing
+
+sampleHopData :: BlindedHopData
+sampleHopData = BlindedHopData
+  { bhdPadding = Nothing
+  , bhdShortChannelId = Just (ShortChannelId 700000 1234 0)
+  , bhdNextNodeId = Nothing
+  , bhdPathId = Just (BS.pack [0x42, 0x42])
+  , bhdNextPathKeyOverride = Nothing
+  , bhdPaymentRelay = Just (PaymentRelay 40 1000 500)
+  , bhdPaymentConstraints = Just (PaymentConstraints 144 1000000)
+  , bhdAllowedFeatures = Nothing
+  }
+
+hopDataWithNextNode :: BlindedHopData
+hopDataWithNextNode = emptyHopData
+  { bhdNextNodeId = Just (Secp256k1.serialize_point testNodePubKey2) }
+
+-- 1. Key Derivation Tests --------------------------------------------------
+
+blindingKeyDerivationTests :: TestTree
+blindingKeyDerivationTests = testGroup "key derivation" [
+    testCase "deriveBlindingRho produces 32 bytes" $ do
+      let DerivedKey rho = deriveBlindingRho testSharedSecretBS
+      BS.length rho @?= 32
+
+  , testCase "deriveBlindingRho is deterministic" $ do
+      let rho1 = deriveBlindingRho testSharedSecretBS
+          rho2 = deriveBlindingRho testSharedSecretBS
+      rho1 @?= rho2
+
+  , testCase "deriveBlindingRho differs for different secrets" $ do
+      let ss1 = SharedSecret (BS.replicate 32 0x00)
+          ss2 = SharedSecret (BS.replicate 32 0x01)
+          rho1 = deriveBlindingRho ss1
+          rho2 = deriveBlindingRho ss2
+      assertBool "rho values should differ" (rho1 /= rho2)
+
+  , testCase "deriveBlindedNodeId produces 33 bytes" $ do
+      case deriveBlindedNodeId testSharedSecretBS testNodePubKey1 of
+        Nothing -> assertFailure "deriveBlindedNodeId returned Nothing"
+        Just blindedId -> BS.length blindedId @?= 33
+
+  , testCase "deriveBlindedNodeId is deterministic" $ do
+      let result1 = deriveBlindedNodeId testSharedSecretBS testNodePubKey1
+          result2 = deriveBlindedNodeId testSharedSecretBS testNodePubKey1
+      result1 @?= result2
+
+  , testCase "deriveBlindedNodeId differs for different nodes" $ do
+      let result1 = deriveBlindedNodeId testSharedSecretBS testNodePubKey1
+          result2 = deriveBlindedNodeId testSharedSecretBS testNodePubKey2
+      assertBool "blinded node IDs should differ" (result1 /= result2)
+  ]
+
+-- 2. Ephemeral Key Iteration Tests -----------------------------------------
+
+-- | Derive the public key for testSeed
+testSeedPubKey :: Secp256k1.Projective
+testSeedPubKey =
+  let Just sk = Secp256k1.roll32 testSeed
+      Just pk = Secp256k1.derive_pub sk
+  in  pk
+
+blindingEphemeralKeyTests :: TestTree
+blindingEphemeralKeyTests = testGroup "ephemeral key iteration" [
+    testCase "nextEphemeral produces valid keys" $ do
+      -- Use matching secret/public key pair
+      case nextEphemeral testSeed testSeedPubKey testSharedSecretBS of
+        Nothing -> assertFailure "nextEphemeral returned Nothing"
+        Just (newSecKey, newPubKey) -> do
+          BS.length newSecKey @?= 32
+          let serialized = Secp256k1.serialize_point newPubKey
+          BS.length serialized @?= 33
+
+  , testCase "nextEphemeral: new secret key derives new public key" $ do
+      -- Use matching secret/public key pair
+      case nextEphemeral testSeed testSeedPubKey testSharedSecretBS of
+        Nothing -> assertFailure "nextEphemeral returned Nothing"
+        Just (newSecKey, newPubKey) -> do
+          let Just sk = Secp256k1.roll32 newSecKey
+              Just derivedPub = Secp256k1.derive_pub sk
+          derivedPub @?= newPubKey
+
+  , testCase "nextEphemeral is deterministic" $ do
+      let result1 = nextEphemeral testSeed testSeedPubKey testSharedSecretBS
+          result2 = nextEphemeral testSeed testSeedPubKey testSharedSecretBS
+      result1 @?= result2
+
+  , testCase "nextEphemeral differs for different shared secrets" $ do
+      let ss1 = SharedSecret (BS.replicate 32 0xAA)
+          ss2 = SharedSecret (BS.replicate 32 0xBB)
+          result1 = nextEphemeral testSeed testSeedPubKey ss1
+          result2 = nextEphemeral testSeed testSeedPubKey ss2
+      assertBool "results should differ" (result1 /= result2)
+  ]
+
+-- 3. TLV Encoding/Decoding Tests -------------------------------------------
+
+blindingTlvTests :: TestTree
+blindingTlvTests = testGroup "TLV encoding/decoding" [
+    testCase "roundtrip: empty hop data" $ do
+      let encoded = encodeBlindedHopData emptyHopData
+          decoded = decodeBlindedHopData encoded
+      decoded @?= Just emptyHopData
+
+  , testCase "roundtrip: sample hop data" $ do
+      let encoded = encodeBlindedHopData sampleHopData
+          decoded = decodeBlindedHopData encoded
+      decoded @?= Just sampleHopData
+
+  , testCase "roundtrip: hop data with next node ID" $ do
+      let encoded = encodeBlindedHopData hopDataWithNextNode
+          decoded = decodeBlindedHopData encoded
+      decoded @?= Just hopDataWithNextNode
+
+  , testCase "roundtrip: hop data with padding" $ do
+      let hopData = emptyHopData { bhdPadding = Just (BS.replicate 16 0x00) }
+          encoded = encodeBlindedHopData hopData
+          decoded = decodeBlindedHopData encoded
+      decoded @?= Just hopData
+
+  , testCase "PaymentRelay encoding/decoding" $ do
+      let relay = PaymentRelay 40 1000 500
+          hopData = emptyHopData { bhdPaymentRelay = Just relay }
+          encoded = encodeBlindedHopData hopData
+          decoded = decodeBlindedHopData encoded
+      case decoded of
+        Nothing -> assertFailure "decodeBlindedHopData returned Nothing"
+        Just hd -> bhdPaymentRelay hd @?= Just relay
+
+  , testCase "PaymentConstraints encoding/decoding" $ do
+      let constraints = PaymentConstraints 144 1000000
+          hopData = emptyHopData { bhdPaymentConstraints = Just constraints }
+          encoded = encodeBlindedHopData hopData
+          decoded = decodeBlindedHopData encoded
+      case decoded of
+        Nothing -> assertFailure "decodeBlindedHopData returned Nothing"
+        Just hd -> bhdPaymentConstraints hd @?= Just constraints
+
+  , testCase "decode empty bytestring returns empty hop data" $ do
+      let decoded = decodeBlindedHopData BS.empty
+      decoded @?= Just emptyHopData
+  ]
+
+-- 4. Encryption/Decryption Tests -------------------------------------------
+
+blindingEncryptionTests :: TestTree
+blindingEncryptionTests = testGroup "encryption/decryption" [
+    testCase "roundtrip: encrypt then decrypt" $ do
+      let rho = deriveBlindingRho testSharedSecretBS
+          encrypted = encryptHopData rho sampleHopData
+          decrypted = decryptHopData rho encrypted
+      decrypted @?= Just sampleHopData
+
+  , testCase "roundtrip: empty hop data" $ do
+      let rho = deriveBlindingRho testSharedSecretBS
+          encrypted = encryptHopData rho emptyHopData
+          decrypted = decryptHopData rho encrypted
+      decrypted @?= Just emptyHopData
+
+  , testCase "decryption with wrong key fails" $ do
+      let rho1 = deriveBlindingRho testSharedSecretBS
+          rho2 = deriveBlindingRho (SharedSecret (BS.replicate 32 0xFF))
+          encrypted = encryptHopData rho1 sampleHopData
+          decrypted = decryptHopData rho2 encrypted
+      assertBool "decryption should fail or produce garbage"
+        (decrypted /= Just sampleHopData)
+
+  , testCase "encrypt is deterministic" $ do
+      let rho = deriveBlindingRho testSharedSecretBS
+          encrypted1 = encryptHopData rho sampleHopData
+          encrypted2 = encryptHopData rho sampleHopData
+      encrypted1 @?= encrypted2
+  ]
+
+-- 5. createBlindedPath Tests -----------------------------------------------
+
+blindingCreatePathTests :: TestTree
+blindingCreatePathTests = testGroup "createBlindedPath" [
+    testCase "create path with 2 hops" $ do
+      let nodes = [(testNodePubKey1, emptyHopData),
+                   (testNodePubKey2, sampleHopData)]
+      case createBlindedPath testSeed nodes of
+        Left err -> assertFailure $ "createBlindedPath failed: " ++ show err
+        Right path -> do
+          length (bpBlindedHops path) @?= 2
+          let serialized = Secp256k1.serialize_point (bpBlindingKey path)
+          BS.length serialized @?= 33
+
+  , testCase "create path with 3 hops" $ do
+      let nodes = [ (testNodePubKey1, emptyHopData)
+                  , (testNodePubKey2, hopDataWithNextNode)
+                  , (testNodePubKey3, sampleHopData)
+                  ]
+      case createBlindedPath testSeed nodes of
+        Left err -> assertFailure $ "createBlindedPath failed: " ++ show err
+        Right path -> length (bpBlindedHops path) @?= 3
+
+  , testCase "all blinded node IDs are 33 bytes" $ do
+      let nodes = [ (testNodePubKey1, emptyHopData)
+                  , (testNodePubKey2, emptyHopData)
+                  , (testNodePubKey3, emptyHopData)
+                  ]
+      case createBlindedPath testSeed nodes of
+        Left err -> assertFailure $ "createBlindedPath failed: " ++ show err
+        Right path -> do
+          let blindedIds = map bhBlindedNodeId (bpBlindedHops path)
+          mapM_ (\bid -> BS.length bid @?= 33) blindedIds
+
+  , testCase "empty path returns EmptyPath error" $ do
+      case createBlindedPath testSeed [] of
+        Left EmptyPath -> return ()
+        Left err -> assertFailure $ "Expected EmptyPath, got: " ++ show err
+        Right _ -> assertFailure "Expected error, got success"
+
+  , testCase "invalid seed returns InvalidSeed error" $ do
+      let invalidSeed = BS.pack [1..16]
+          nodes = [(testNodePubKey1, emptyHopData)]
+      case createBlindedPath invalidSeed nodes of
+        Left InvalidSeed -> return ()
+        Left err -> assertFailure $ "Expected InvalidSeed, got: " ++ show err
+        Right _ -> assertFailure "Expected error, got success"
+
+  , testCase "createBlindedPath is deterministic" $ do
+      let nodes = [(testNodePubKey1, emptyHopData),
+                   (testNodePubKey2, sampleHopData)]
+          result1 = createBlindedPath testSeed nodes
+          result2 = createBlindedPath testSeed nodes
+      result1 @?= result2
+  ]
+
+-- 6. processBlindedHop Tests -----------------------------------------------
+
+blindingProcessHopTests :: TestTree
+blindingProcessHopTests = testGroup "processBlindedHop" [
+    testCase "process first hop decrypts correctly" $ do
+      let nodes = [(testNodePubKey1, sampleHopData),
+                   (testNodePubKey2, emptyHopData)]
+      case createBlindedPath testSeed nodes of
+        Left err -> assertFailure $ "createBlindedPath failed: " ++ show err
+        Right path -> do
+          let firstHop = head (bpBlindedHops path)
+              pathKey = bpBlindingKey path
+          case processBlindedHop testNodeSecKey1 pathKey
+                 (bhEncryptedData firstHop) of
+            Left err -> assertFailure $
+              "processBlindedHop failed: " ++ show err
+            Right (decryptedData, _) -> decryptedData @?= sampleHopData
+
+  , testCase "process hop chain correctly" $ do
+      let nodes = [ (testNodePubKey1, emptyHopData)
+                  , (testNodePubKey2, sampleHopData)
+                  , (testNodePubKey3, hopDataWithNextNode)
+                  ]
+      case createBlindedPath testSeed nodes of
+        Left err -> assertFailure $ "createBlindedPath failed: " ++ show err
+        Right path -> do
+          let [hop1, hop2, hop3] = bpBlindedHops path
+              pathKey1 = bpBlindingKey path
+
+          case processBlindedHop testNodeSecKey1 pathKey1
+                 (bhEncryptedData hop1) of
+            Left err -> assertFailure $
+              "processBlindedHop hop1 failed: " ++ show err
+            Right (data1, pathKey2) -> do
+              data1 @?= emptyHopData
+
+              case processBlindedHop testNodeSecKey2 pathKey2
+                     (bhEncryptedData hop2) of
+                Left err -> assertFailure $
+                  "processBlindedHop hop2 failed: " ++ show err
+                Right (data2, pathKey3) -> do
+                  data2 @?= sampleHopData
+
+                  case processBlindedHop testNodeSecKey3 pathKey3
+                         (bhEncryptedData hop3) of
+                    Left err -> assertFailure $
+                      "processBlindedHop hop3 failed: " ++ show err
+                    Right (data3, _) -> data3 @?= hopDataWithNextNode
+
+  , testCase "process hop with wrong node key fails" $ do
+      let nodes = [(testNodePubKey1, sampleHopData)]
+      case createBlindedPath testSeed nodes of
+        Left err -> assertFailure $ "createBlindedPath failed: " ++ show err
+        Right path -> do
+          let firstHop = head (bpBlindedHops path)
+              pathKey = bpBlindingKey path
+          case processBlindedHop testNodeSecKey2 pathKey
+                 (bhEncryptedData firstHop) of
+            Left _ -> return ()
+            Right (decryptedData, _) ->
+              assertBool "should not decrypt correctly"
+                (decryptedData /= sampleHopData)
+
+  , testCase "next path key is valid point" $ do
+      let nodes = [(testNodePubKey1, emptyHopData),
+                   (testNodePubKey2, emptyHopData)]
+      case createBlindedPath testSeed nodes of
+        Left err -> assertFailure $ "createBlindedPath failed: " ++ show err
+        Right path -> do
+          let firstHop = head (bpBlindedHops path)
+              pathKey = bpBlindingKey path
+          case processBlindedHop testNodeSecKey1 pathKey
+                 (bhEncryptedData firstHop) of
+            Left err -> assertFailure $
+              "processBlindedHop failed: " ++ show err
+            Right (_, nextPathKey) -> do
+              let serialized = Secp256k1.serialize_point nextPathKey
+              BS.length serialized @?= 33
+
+  , testCase "next_path_key_override is used when present" $ do
+      let overrideKey = Secp256k1.serialize_point testNodePubKey3
+          hopDataWithOverride' = emptyHopData
+            { bhdNextPathKeyOverride = Just overrideKey }
+          nodes = [(testNodePubKey1, hopDataWithOverride'),
+                   (testNodePubKey2, emptyHopData)]
+      case createBlindedPath testSeed nodes of
+        Left err -> assertFailure $ "createBlindedPath failed: " ++ show err
+        Right path -> do
+          let firstHop = head (bpBlindedHops path)
+              pathKey = bpBlindingKey path
+          case processBlindedHop testNodeSecKey1 pathKey
+                 (bhEncryptedData firstHop) of
+            Left err -> assertFailure $
+              "processBlindedHop failed: " ++ show err
+            Right (decryptedData, nextPathKey) -> do
+              bhdNextPathKeyOverride decryptedData @?= Just overrideKey
+              nextPathKey @?= testNodePubKey3
   ]
