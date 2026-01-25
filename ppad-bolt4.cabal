@@ -24,6 +24,7 @@ library
         -Wall
     exposed-modules:
         Lightning.Protocol.BOLT4
+        Lightning.Protocol.BOLT4.Blinding
         Lightning.Protocol.BOLT4.Codec
         Lightning.Protocol.BOLT4.Construct
         Lightning.Protocol.BOLT4.Error
@@ -33,6 +34,7 @@ library
     build-depends:
         base >= 4.9 && < 5
       , bytestring >= 0.9 && < 0.13
+      , ppad-aead >= 0.3 && < 0.4
       , ppad-chacha >= 0.2 && < 0.3
       , ppad-secp256k1 >= 0.5 && < 0.6
       , ppad-sha256 >= 0.3 && < 0.4
