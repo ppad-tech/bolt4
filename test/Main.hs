@@ -6,6 +6,7 @@ import qualified Data.ByteString as BS
 import qualified Data.ByteString.Base16 as B16
 import qualified Crypto.Curve.Secp256k1 as Secp256k1
 import Lightning.Protocol.BOLT4.Codec
+import Lightning.Protocol.BOLT4.Construct
 import Lightning.Protocol.BOLT4.Prim
 import Lightning.Protocol.BOLT4.Types
 import Test.Tasty
@@ -29,6 +30,9 @@ main = defaultMain $ testGroup "ppad-bolt4" [
       ]
   , testGroup "OnionPacket" [
         onionPacketTests
+      ]
+  , testGroup "Construct" [
+        constructTests
       ]
   ]
 
@@ -321,3 +325,151 @@ testHmacOperations = testGroup "HMAC operations" [
       assertBool "verifyHmac should fail"
         (not $ verifyHmac "short" "different length")
   ]
+
+-- Construct tests ------------------------------------------------------------
+
+-- Test vectors from BOLT4 spec
+hop1PubKeyHex :: BS.ByteString
+hop1PubKeyHex =
+  "0324653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c"
+
+hop2PubKeyHex :: BS.ByteString
+hop2PubKeyHex =
+  "027f31ebc5462c1fdce1b737ecff52d37d75dea43ce11c74d25aa297165faa2007"
+
+hop3PubKeyHex :: BS.ByteString
+hop3PubKeyHex =
+  "032c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991"
+
+hop4PubKeyHex :: BS.ByteString
+hop4PubKeyHex =
+  "02edabbd16b41c8371b92ef2f04c1185b4f03b6dcd52ba9b78d9d7c89c8f221145"
+
+-- Expected shared secrets from BOLT4 error test vectors (in route order)
+hop1SharedSecretHex :: BS.ByteString
+hop1SharedSecretHex =
+  "a6519e98832a0b179f62123b3567c106db99ee37bef036e783263602f3488fae"
+
+hop2SharedSecretHex :: BS.ByteString
+hop2SharedSecretHex =
+  "3a6b412548762f0dbccce5c7ae7bb8147d1caf9b5471c34120b30bc9c04891cc"
+
+hop3SharedSecretHex :: BS.ByteString
+hop3SharedSecretHex =
+  "21e13c2d7cfe7e18836df50872466117a295783ab8aab0e7ecc8c725503ad02d"
+
+hop4SharedSecretHex :: BS.ByteString
+hop4SharedSecretHex =
+  "b5756b9b542727dbafc6765a49488b023a725d631af688fc031217e90770c328"
+
+constructTests :: TestTree
+constructTests = testGroup "packet construction" [
+    testConstructErrorCases
+  , testSharedSecretComputation
+  , testPacketStructure
+  , testSingleHop
+  ]
+
+testConstructErrorCases :: TestTree
+testConstructErrorCases = testGroup "error cases" [
+    testCase "rejects invalid session key (too short)" $ do
+      let result = construct (BS.replicate 31 0x41) [] ""
+      case result of
+        Left InvalidSessionKey -> return ()
+        _ -> assertFailure "Expected InvalidSessionKey"
+  , testCase "rejects invalid session key (too long)" $ do
+      let result = construct (BS.replicate 33 0x41) [] ""
+      case result of
+        Left InvalidSessionKey -> return ()
+        _ -> assertFailure "Expected InvalidSessionKey"
+  , testCase "rejects empty route" $ do
+      let result = construct sessionKey [] ""
+      case result of
+        Left EmptyRoute -> return ()
+        _ -> assertFailure "Expected EmptyRoute"
+  , testCase "rejects too many hops" $ do
+      let Just pub = Secp256k1.parse_point (fromHex hop0PubKeyHex)
+          emptyPayload = HopPayload Nothing Nothing Nothing Nothing
+                           Nothing Nothing []
+          hop = Hop pub emptyPayload
+          hops = replicate 21 hop
+          result = construct sessionKey hops ""
+      case result of
+        Left TooManyHops -> return ()
+        _ -> assertFailure "Expected TooManyHops"
+  ]
+
+testSharedSecretComputation :: TestTree
+testSharedSecretComputation =
+  testCase "computes correct shared secrets (BOLT4 spec)" $ do
+    let Just pub0 = Secp256k1.parse_point (fromHex hop0PubKeyHex)
+        Just pub1 = Secp256k1.parse_point (fromHex hop1PubKeyHex)
+        Just pub2 = Secp256k1.parse_point (fromHex hop2PubKeyHex)
+        Just pub3 = Secp256k1.parse_point (fromHex hop3PubKeyHex)
+        Just pub4 = Secp256k1.parse_point (fromHex hop4PubKeyHex)
+        emptyPayload = HopPayload Nothing Nothing Nothing Nothing
+                         Nothing Nothing []
+        hops = [ Hop pub0 emptyPayload
+               , Hop pub1 emptyPayload
+               , Hop pub2 emptyPayload
+               , Hop pub3 emptyPayload
+               , Hop pub4 emptyPayload
+               ]
+        result = construct sessionKey hops ""
+    case result of
+      Left err -> assertFailure $ "construct failed: " ++ show err
+      Right (_, secrets) -> do
+        length secrets @?= 5
+        let [SharedSecret ss0, SharedSecret ss1, SharedSecret ss2,
+             SharedSecret ss3, SharedSecret ss4] = secrets
+        ss0 @?= fromHex hop0SharedSecretHex
+        ss1 @?= fromHex hop1SharedSecretHex
+        ss2 @?= fromHex hop2SharedSecretHex
+        ss3 @?= fromHex hop3SharedSecretHex
+        ss4 @?= fromHex hop4SharedSecretHex
+
+testPacketStructure :: TestTree
+testPacketStructure = testCase "produces valid packet structure" $ do
+  let Just pub0 = Secp256k1.parse_point (fromHex hop0PubKeyHex)
+      Just pub1 = Secp256k1.parse_point (fromHex hop1PubKeyHex)
+      emptyPayload = HopPayload Nothing Nothing Nothing Nothing
+                       Nothing Nothing []
+      hops = [Hop pub0 emptyPayload, Hop pub1 emptyPayload]
+      result = construct sessionKey hops ""
+  case result of
+    Left err -> assertFailure $ "construct failed: " ++ show err
+    Right (packet, _) -> do
+      opVersion packet @?= versionByte
+      BS.length (opEphemeralKey packet) @?= pubkeySize
+      BS.length (opHopPayloads packet) @?= hopPayloadsSize
+      BS.length (opHmac packet) @?= hmacSize
+      -- The ephemeral key should be the public key derived from session key
+      let Just sk = Secp256k1.roll32 sessionKey
+          Just expectedPub = Secp256k1.derive_pub sk
+          expectedPubBytes = Secp256k1.serialize_point expectedPub
+      opEphemeralKey packet @?= expectedPubBytes
+
+testSingleHop :: TestTree
+testSingleHop = testCase "constructs single-hop packet" $ do
+  let Just pub0 = Secp256k1.parse_point (fromHex hop0PubKeyHex)
+      payload = HopPayload
+        { hpAmtToForward = Just 1000
+        , hpOutgoingCltv = Just 500000
+        , hpShortChannelId = Nothing
+        , hpPaymentData = Nothing
+        , hpEncryptedData = Nothing
+        , hpCurrentPathKey = Nothing
+        , hpUnknownTlvs = []
+        }
+      hops = [Hop pub0 payload]
+      result = construct sessionKey hops ""
+  case result of
+    Left err -> assertFailure $ "construct failed: " ++ show err
+    Right (packet, secrets) -> do
+      length secrets @?= 1
+      -- Packet should be valid structure
+      let encoded = encodeOnionPacket packet
+      BS.length encoded @?= onionPacketSize
+      -- Should decode back
+      let Just decoded = decodeOnionPacket encoded
+      decoded @?= packet
