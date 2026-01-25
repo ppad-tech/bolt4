@@ -31,10 +31,23 @@ module Lightning.Protocol.BOLT4.Types (
   , pattern InvalidRealm
   , pattern TemporaryNodeFailure
   , pattern PermanentNodeFailure
+  , pattern RequiredNodeFeatureMissing
+  , pattern InvalidOnionVersion
   , pattern InvalidOnionHmac
   , pattern InvalidOnionKey
   , pattern TemporaryChannelFailure
+  , pattern PermanentChannelFailure
+  , pattern AmountBelowMinimum
+  , pattern FeeInsufficient
+  , pattern IncorrectCltvExpiry
+  , pattern ExpiryTooSoon
   , pattern IncorrectOrUnknownPaymentDetails
+  , pattern FinalIncorrectCltvExpiry
+  , pattern FinalIncorrectHtlcAmount
+  , pattern ChannelDisabled
+  , pattern ExpiryTooFar
+  , pattern InvalidOnionPayload
+  , pattern MppTimeout
 
     -- * Processing results
   , ProcessResult(..)
@@ -140,6 +153,14 @@ pattern TemporaryNodeFailure = FailureCode 0x2002  -- NODE .|. 2
 pattern PermanentNodeFailure :: FailureCode
 pattern PermanentNodeFailure = FailureCode 0x6002  -- PERM .|. NODE .|. 2
 
+-- | Required node feature missing.
+pattern RequiredNodeFeatureMissing :: FailureCode
+pattern RequiredNodeFeatureMissing = FailureCode 0x6003  -- PERM .|. NODE .|. 3
+
+-- | Invalid onion version.
+pattern InvalidOnionVersion :: FailureCode
+pattern InvalidOnionVersion = FailureCode 0xC004  -- BADONION .|. PERM .|. 4
+
 -- | Invalid HMAC in onion.
 pattern InvalidOnionHmac :: FailureCode
 pattern InvalidOnionHmac = FailureCode 0xC005  -- BADONION .|. PERM .|. 5
@@ -152,9 +173,53 @@ pattern InvalidOnionKey = FailureCode 0xC006  -- BADONION .|. PERM .|. 6
 pattern TemporaryChannelFailure :: FailureCode
 pattern TemporaryChannelFailure = FailureCode 0x1007  -- UPDATE .|. 7
 
+-- | Permanent channel failure.
+pattern PermanentChannelFailure :: FailureCode
+pattern PermanentChannelFailure = FailureCode 0x4008  -- PERM .|. 8
+
+-- | Amount below minimum for channel.
+pattern AmountBelowMinimum :: FailureCode
+pattern AmountBelowMinimum = FailureCode 0x100B  -- UPDATE .|. 11
+
+-- | Fee insufficient.
+pattern FeeInsufficient :: FailureCode
+pattern FeeInsufficient = FailureCode 0x100C  -- UPDATE .|. 12
+
+-- | Incorrect CLTV expiry.
+pattern IncorrectCltvExpiry :: FailureCode
+pattern IncorrectCltvExpiry = FailureCode 0x100D  -- UPDATE .|. 13
+
+-- | Expiry too soon.
+pattern ExpiryTooSoon :: FailureCode
+pattern ExpiryTooSoon = FailureCode 0x100E  -- UPDATE .|. 14
+
 -- | Payment details incorrect or unknown.
 pattern IncorrectOrUnknownPaymentDetails :: FailureCode
 pattern IncorrectOrUnknownPaymentDetails = FailureCode 0x400F  -- PERM .|. 15
+
+-- | Final incorrect CLTV expiry.
+pattern FinalIncorrectCltvExpiry :: FailureCode
+pattern FinalIncorrectCltvExpiry = FailureCode 18  -- 0x12
+
+-- | Final incorrect HTLC amount.
+pattern FinalIncorrectHtlcAmount :: FailureCode
+pattern FinalIncorrectHtlcAmount = FailureCode 19  -- 0x13
+
+-- | Channel disabled.
+pattern ChannelDisabled :: FailureCode
+pattern ChannelDisabled = FailureCode 0x1014  -- UPDATE .|. 20
+
+-- | Expiry too far.
+pattern ExpiryTooFar :: FailureCode
+pattern ExpiryTooFar = FailureCode 21  -- 0x15
+
+-- | Invalid onion payload.
+pattern InvalidOnionPayload :: FailureCode
+pattern InvalidOnionPayload = FailureCode 0x4016  -- PERM .|. 22
+
+-- | MPP timeout.
+pattern MppTimeout :: FailureCode
+pattern MppTimeout = FailureCode 23  -- 0x17
 
 -- Processing results -------------------------------------------------------
 

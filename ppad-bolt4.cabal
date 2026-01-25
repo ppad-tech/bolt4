@@ -25,6 +25,7 @@ library
     exposed-modules:
         Lightning.Protocol.BOLT4
         Lightning.Protocol.BOLT4.Codec
+        Lightning.Protocol.BOLT4.Error
         Lightning.Protocol.BOLT4.Prim
         Lightning.Protocol.BOLT4.Types
     build-depends:
