@@ -26,6 +26,7 @@ library
         Lightning.Protocol.BOLT4
         Lightning.Protocol.BOLT4.Codec
         Lightning.Protocol.BOLT4.Prim
+        Lightning.Protocol.BOLT4.Process
         Lightning.Protocol.BOLT4.Types
     build-depends:
         base >= 4.9 && < 5

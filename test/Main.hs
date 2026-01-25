@@ -2,11 +2,13 @@
 
 module Main where
 
+import Data.Bits (xor)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Base16 as B16
 import qualified Crypto.Curve.Secp256k1 as Secp256k1
 import Lightning.Protocol.BOLT4.Codec
 import Lightning.Protocol.BOLT4.Prim
+import Lightning.Protocol.BOLT4.Process
 import Lightning.Protocol.BOLT4.Types
 import Test.Tasty
 import Test.Tasty.HUnit
@@ -29,6 +31,9 @@ main = defaultMain $ testGroup "ppad-bolt4" [
       ]
   , testGroup "OnionPacket" [
         onionPacketTests
+      ]
+  , testGroup "Process" [
+        processTests
       ]
   ]
 
@@ -320,4 +325,148 @@ testHmacOperations = testGroup "HMAC operations" [
   , testCase "verifyHmac fails for different lengths" $ do
       assertBool "verifyHmac should fail"
         (not $ verifyHmac "short" "different length")
+  ]
+
+-- Process tests -------------------------------------------------------------
+
+processTests :: TestTree
+processTests = testGroup "packet processing" [
+    testVersionValidation
+  , testEphemeralKeyValidation
+  , testHmacValidation
+  , testProcessBasic
+  ]
+
+testVersionValidation :: TestTree
+testVersionValidation = testGroup "version validation" [
+    testCase "reject invalid version 0x01" $ do
+      let packet = OnionPacket
+            { opVersion = 0x01  -- Invalid, should be 0x00
+            , opEphemeralKey = BS.replicate 33 0x02
+            , opHopPayloads = BS.replicate 1300 0x00
+            , opHmac = BS.replicate 32 0x00
+            }
+      case process sessionKey packet BS.empty of
+        Left (InvalidVersion v) -> v @?= 0x01
+        Left other -> assertFailure $ "expected InvalidVersion, got: " ++ show other
+        Right _ -> assertFailure "expected rejection, got success"
+  , testCase "reject invalid version 0xFF" $ do
+      let packet = OnionPacket
+            { opVersion = 0xFF
+            , opEphemeralKey = BS.replicate 33 0x02
+            , opHopPayloads = BS.replicate 1300 0x00
+            , opHmac = BS.replicate 32 0x00
+            }
+      case process sessionKey packet BS.empty of
+        Left (InvalidVersion v) -> v @?= 0xFF
+        Left other -> assertFailure $ "expected InvalidVersion, got: " ++ show other
+        Right _ -> assertFailure "expected rejection, got success"
+  ]
+
+testEphemeralKeyValidation :: TestTree
+testEphemeralKeyValidation = testGroup "ephemeral key validation" [
+    testCase "reject invalid ephemeral key (all zeros)" $ do
+      let packet = OnionPacket
+            { opVersion = 0x00
+            , opEphemeralKey = BS.replicate 33 0x00  -- Invalid pubkey
+            , opHopPayloads = BS.replicate 1300 0x00
+            , opHmac = BS.replicate 32 0x00
+            }
+      case process sessionKey packet BS.empty of
+        Left InvalidEphemeralKey -> return ()
+        Left other -> assertFailure $ "expected InvalidEphemeralKey, got: "
+          ++ show other
+        Right _ -> assertFailure "expected rejection, got success"
+  , testCase "reject malformed ephemeral key" $ do
+      -- 0x04 prefix is for uncompressed keys, but we only have 33 bytes
+      let packet = OnionPacket
+            { opVersion = 0x00
+            , opEphemeralKey = BS.pack (0x04 : replicate 32 0xAB)
+            , opHopPayloads = BS.replicate 1300 0x00
+            , opHmac = BS.replicate 32 0x00
+            }
+      case process sessionKey packet BS.empty of
+        Left InvalidEphemeralKey -> return ()
+        Left other -> assertFailure $ "expected InvalidEphemeralKey, got: "
+          ++ show other
+        Right _ -> assertFailure "expected rejection, got success"
+  ]
+
+testHmacValidation :: TestTree
+testHmacValidation = testGroup "HMAC validation" [
+    testCase "reject invalid HMAC" $ do
+      -- Use a valid ephemeral key but wrong HMAC
+      let Just hop0PubKey = Secp256k1.parse_point (fromHex hop0PubKeyHex)
+          ephKeyBytes = Secp256k1.serialize_point hop0PubKey
+          packet = OnionPacket
+            { opVersion = 0x00
+            , opEphemeralKey = ephKeyBytes
+            , opHopPayloads = BS.replicate 1300 0x00
+            , opHmac = BS.replicate 32 0xFF  -- Wrong HMAC
+            }
+      case process sessionKey packet BS.empty of
+        Left HmacMismatch -> return ()
+        Left other -> assertFailure $ "expected HmacMismatch, got: "
+          ++ show other
+        Right _ -> assertFailure "expected rejection, got success"
+  ]
+
+-- | Test basic packet processing with a properly constructed packet.
+testProcessBasic :: TestTree
+testProcessBasic = testGroup "basic processing" [
+    testCase "process valid packet (final hop, all-zero next HMAC)" $ do
+      -- Construct a valid packet for a final hop
+      -- The hop payload needs to be properly formatted TLV
+      let Just hop0PubKey = Secp256k1.parse_point (fromHex hop0PubKeyHex)
+          ephKeyBytes = Secp256k1.serialize_point hop0PubKey
+
+          -- Create a minimal hop payload TLV
+          -- amt_to_forward (type 2) = 1000 msat
+          -- outgoing_cltv (type 4) = 500000
+          hopPayloadTlv = encodeHopPayload HopPayload
+            { hpAmtToForward = Just 1000
+            , hpOutgoingCltv = Just 500000
+            , hpShortChannelId = Nothing
+            , hpPaymentData = Nothing
+            , hpEncryptedData = Nothing
+            , hpCurrentPathKey = Nothing
+            , hpUnknownTlvs = []
+            }
+
+          -- Length-prefixed payload followed by all-zero HMAC (final hop)
+          payloadLen = BS.length hopPayloadTlv
+          lenPrefix = encodeBigSize (fromIntegral payloadLen)
+          payloadWithHmac = lenPrefix <> hopPayloadTlv
+            <> BS.replicate 32 0x00  -- Zero HMAC = final hop
+
+          -- Pad to 1300 bytes
+          padding = BS.replicate (1300 - BS.length payloadWithHmac) 0x00
+          rawPayloads = payloadWithHmac <> padding
+
+          -- Compute shared secret and encrypt payloads
+          Just ss = computeSharedSecret sessionKey hop0PubKey
+          rhoKey = deriveRho ss
+          muKey = deriveMu ss
+
+          -- Encrypt: XOR with keystream
+          stream = generateStream rhoKey 1300
+          encryptedPayloads = BS.pack (BS.zipWith xor rawPayloads stream)
+
+          -- Compute correct HMAC
+          correctHmac = computeHmac muKey encryptedPayloads BS.empty
+
+          packet = OnionPacket
+            { opVersion = 0x00
+            , opEphemeralKey = ephKeyBytes
+            , opHopPayloads = encryptedPayloads
+            , opHmac = correctHmac
+            }
+
+      case process sessionKey packet BS.empty of
+        Left err -> assertFailure $ "expected success, got: " ++ show err
+        Right (Receive ri) -> do
+          -- Verify we got the payload back
+          hpAmtToForward (riPayload ri) @?= Just 1000
+          hpOutgoingCltv (riPayload ri) @?= Just 500000
+        Right (Forward _) -> assertFailure "expected Receive, got Forward"
   ]
