@@ -2,36 +2,65 @@
   description = "A Haskell implementation of BOLT4 (onion routing).";
 
   inputs = {
-    ppad-aead.url = "path:/Users/jtobin/src/ppad/aead";
-    ppad-aead.inputs.ppad-nixpkgs.follows = "ppad-nixpkgs";
-    ppad-aead.inputs.ppad-chacha.follows = "ppad-chacha";
-
-    ppad-base16.url = "path:/Users/jtobin/src/ppad/base16";
-    ppad-base16.inputs.ppad-nixpkgs.follows = "ppad-nixpkgs";
-
-    ppad-chacha.url = "path:/Users/jtobin/src/ppad/chacha";
-    ppad-chacha.inputs.ppad-nixpkgs.follows = "ppad-nixpkgs";
-
-    ppad-fixed.url = "path:/Users/jtobin/src/ppad/fixed";
-    ppad-fixed.inputs.ppad-nixpkgs.follows = "ppad-nixpkgs";
-
-    ppad-secp256k1.url = "path:/Users/jtobin/src/ppad/secp256k1";
-    ppad-secp256k1.inputs.ppad-nixpkgs.follows = "ppad-nixpkgs";
-    ppad-secp256k1.inputs.ppad-sha256.follows = "ppad-sha256";
-    ppad-secp256k1.inputs.ppad-fixed.follows = "ppad-fixed";
-
-    ppad-sha256.url = "path:/Users/jtobin/src/ppad/sha256";
-    ppad-sha256.inputs.ppad-nixpkgs.follows = "ppad-nixpkgs";
-
-    ppad-nixpkgs.url = "path:/Users/jtobin/src/ppad/nixpkgs";
-
+    ppad-aead = {
+      type = "git";
+      url  = "git://git.ppad.tech/aead.git";
+      ref  = "master";
+      inputs.ppad-nixpkgs.follows = "ppad-nixpkgs";
+      inputs.ppad-chacha.follows = "ppad-chacha";
+    };
+    ppad-base16 = {
+      type = "git";
+      url  = "git://git.ppad.tech/base16.git";
+      ref  = "master";
+      inputs.ppad-nixpkgs.follows = "ppad-nixpkgs";
+    };
+    ppad-chacha = {
+      type = "git";
+      url  = "git://git.ppad.tech/chacha.git";
+      ref  = "master";
+      inputs.ppad-nixpkgs.follows = "ppad-nixpkgs";
+    };
+    ppad-fixed = {
+      type = "git";
+      url  = "git://git.ppad.tech/fixed.git";
+      ref  = "master";
+      inputs.ppad-nixpkgs.follows = "ppad-nixpkgs";
+    };
+    ppad-hmac-drbg = {
+      type = "git";
+      url  = "git://git.ppad.tech/hmac-drbg.git";
+      ref  = "master";
+      inputs.ppad-nixpkgs.follows = "ppad-nixpkgs";
+      inputs.ppad-sha256.follows = "ppad-sha256";
+    };
+    ppad-secp256k1 = {
+      type = "git";
+      url  = "git://git.ppad.tech/secp256k1.git";
+      ref  = "master";
+      inputs.ppad-nixpkgs.follows = "ppad-nixpkgs";
+      inputs.ppad-sha256.follows = "ppad-sha256";
+      inputs.ppad-fixed.follows = "ppad-fixed";
+      inputs.ppad-hmac-drbg.follows = "ppad-hmac-drbg";
+    };
+    ppad-sha256 = {
+      type = "git";
+      url  = "git://git.ppad.tech/sha256.git";
+      ref  = "master";
+      inputs.ppad-nixpkgs.follows = "ppad-nixpkgs";
+    };
+    ppad-nixpkgs = {
+      type = "git";
+      url  = "git://git.ppad.tech/nixpkgs.git";
+      ref  = "master";
+    };
     flake-utils.follows = "ppad-nixpkgs/flake-utils";
     nixpkgs.follows = "ppad-nixpkgs/nixpkgs";
   };
 
   outputs = { self, nixpkgs, flake-utils, ppad-nixpkgs
             , ppad-aead, ppad-base16, ppad-chacha, ppad-fixed
-            , ppad-secp256k1, ppad-sha256
+            , ppad-hmac-drbg, ppad-secp256k1, ppad-sha256
             }:
     flake-utils.lib.eachDefaultSystem (system:
       let
@@ -66,6 +95,12 @@
             (hlib.enableCabalFlag fixed "llvm")
             [ llvm clang ];
 
+        hmac-drbg = ppad-hmac-drbg.packages.${system}.default;
+        hmac-drbg-llvm =
+          hlib.addBuildTools
+            (hlib.enableCabalFlag hmac-drbg "llvm")
+            [ llvm clang ];
+
         secp256k1 = ppad-secp256k1.packages.${system}.default;
         secp256k1-llvm =
           hlib.addBuildTools
@@ -83,6 +118,7 @@
           ppad-base16 = base16-llvm;
           ppad-chacha = chacha-llvm;
           ppad-fixed = fixed-llvm;
+          ppad-hmac-drbg = hmac-drbg-llvm;
           ppad-secp256k1 = secp256k1-llvm;
           ppad-sha256 = sha256-llvm;
           ${lib} = new.callCabal2nix lib ./. {
