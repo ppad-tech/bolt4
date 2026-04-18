@@ -1,6 +1,4 @@
 {-# LANGUAGE OverloadedStrings #-}
-{-# OPTIONS_GHC -Wno-incomplete-uni-patterns #-}
-{-# OPTIONS_GHC -Wno-x-partial #-}
 
 module Main where
 
@@ -19,6 +17,11 @@ import Lightning.Protocol.BOLT4.Types
 import Test.Tasty
 import Test.Tasty.HUnit
 import Test.Tasty.QuickCheck
+
+-- | Demand a Just value in IO, failing the test on Nothing.
+demand :: String -> Maybe a -> IO a
+demand _ (Just a) = pure a
+demand msg Nothing = assertFailure msg
 
 main :: IO ()
 main = defaultMain $ testGroup "ppad-bolt4" [
@@ -236,7 +239,8 @@ primTests = testGroup "cryptographic primitives" [
 
 testSharedSecret :: TestTree
 testSharedSecret = testCase "computeSharedSecret (BOLT4 spec hop 0)" $ do
-  let Just pubKey = Secp256k1.parse_point (fromHex hop0PubKeyHex)
+  pubKey <- demand "parse_point" $
+    Secp256k1.parse_point (fromHex hop0PubKeyHex)
   case computeSharedSecret sessionKey pubKey of
     Nothing -> assertFailure "computeSharedSecret returned Nothing"
     Just (SharedSecret computed) -> do
@@ -245,9 +249,10 @@ testSharedSecret = testCase "computeSharedSecret (BOLT4 spec hop 0)" $ do
 
 testBlindingFactor :: TestTree
 testBlindingFactor = testCase "computeBlindingFactor (BOLT4 spec hop 0)" $ do
-  let Just sk = Secp256k1.roll32 sessionKey
-      Just ephemPubKey = Secp256k1.derive_pub sk
-      Just nodePubKey = Secp256k1.parse_point (fromHex hop0PubKeyHex)
+  sk <- demand "roll32" $ Secp256k1.roll32 sessionKey
+  ephemPubKey <- demand "derive_pub" $ Secp256k1.derive_pub sk
+  nodePubKey <- demand "parse_point" $
+    Secp256k1.parse_point (fromHex hop0PubKeyHex)
   case computeSharedSecret sessionKey nodePubKey of
     Nothing -> assertFailure "computeSharedSecret returned Nothing"
     Just sharedSecret -> do
@@ -291,9 +296,9 @@ testKeyDerivation = testGroup "key derivation" [
 testBlindPubKey :: TestTree
 testBlindPubKey = testGroup "key blinding" [
     testCase "blindPubKey produces valid key" $ do
-      let Just sk = Secp256k1.roll32 sessionKey
-          Just pubKey = Secp256k1.derive_pub sk
-          bf = BlindingFactor (fromHex hop0BlindingFactorHex)
+      sk <- demand "roll32" $ Secp256k1.roll32 sessionKey
+      pubKey <- demand "derive_pub" $ Secp256k1.derive_pub sk
+      let bf = BlindingFactor (fromHex hop0BlindingFactorHex)
       case blindPubKey pubKey bf of
         Nothing -> assertFailure "blindPubKey returned Nothing"
         Just _blinded -> return ()
@@ -403,8 +408,9 @@ testConstructErrorCases = testGroup "error cases" [
         Left EmptyRoute -> return ()
         _ -> assertFailure "Expected EmptyRoute"
   , testCase "rejects too many hops" $ do
-      let Just pub = Secp256k1.parse_point (fromHex hop0PubKeyHex)
-          emptyPayload = HopPayload Nothing Nothing Nothing Nothing
+      pub <- demand "parse_point" $
+        Secp256k1.parse_point (fromHex hop0PubKeyHex)
+      let emptyPayload = HopPayload Nothing Nothing Nothing Nothing
                            Nothing Nothing []
           hop = Hop pub emptyPayload
           hops = replicate 21 hop
@@ -417,12 +423,17 @@ testConstructErrorCases = testGroup "error cases" [
 testSharedSecretComputation :: TestTree
 testSharedSecretComputation =
   testCase "computes correct shared secrets (BOLT4 spec)" $ do
-    let Just pub0 = Secp256k1.parse_point (fromHex hop0PubKeyHex)
-        Just pub1 = Secp256k1.parse_point (fromHex hop1PubKeyHex)
-        Just pub2 = Secp256k1.parse_point (fromHex hop2PubKeyHex)
-        Just pub3 = Secp256k1.parse_point (fromHex hop3PubKeyHex)
-        Just pub4 = Secp256k1.parse_point (fromHex hop4PubKeyHex)
-        emptyPayload = HopPayload Nothing Nothing Nothing Nothing
+    pub0 <- demand "parse_point" $
+      Secp256k1.parse_point (fromHex hop0PubKeyHex)
+    pub1 <- demand "parse_point" $
+      Secp256k1.parse_point (fromHex hop1PubKeyHex)
+    pub2 <- demand "parse_point" $
+      Secp256k1.parse_point (fromHex hop2PubKeyHex)
+    pub3 <- demand "parse_point" $
+      Secp256k1.parse_point (fromHex hop3PubKeyHex)
+    pub4 <- demand "parse_point" $
+      Secp256k1.parse_point (fromHex hop4PubKeyHex)
+    let emptyPayload = HopPayload Nothing Nothing Nothing Nothing
                          Nothing Nothing []
         hops = [ Hop pub0 emptyPayload
                , Hop pub1 emptyPayload
@@ -433,21 +444,23 @@ testSharedSecretComputation =
         result = construct sessionKey hops ""
     case result of
       Left err -> assertFailure $ "construct failed: " ++ show err
-      Right (_, secrets) -> do
-        length secrets @?= 5
-        let [SharedSecret ss0, SharedSecret ss1, SharedSecret ss2,
-             SharedSecret ss3, SharedSecret ss4] = secrets
-        ss0 @?= fromHex hop0SharedSecretHex
-        ss1 @?= fromHex hop1SharedSecretHex
-        ss2 @?= fromHex hop2SharedSecretHex
-        ss3 @?= fromHex hop3SharedSecretHex
-        ss4 @?= fromHex hop4SharedSecretHex
+      Right (_, secrets) -> case secrets of
+        [SharedSecret ss0, SharedSecret ss1, SharedSecret ss2,
+         SharedSecret ss3, SharedSecret ss4] -> do
+          ss0 @?= fromHex hop0SharedSecretHex
+          ss1 @?= fromHex hop1SharedSecretHex
+          ss2 @?= fromHex hop2SharedSecretHex
+          ss3 @?= fromHex hop3SharedSecretHex
+          ss4 @?= fromHex hop4SharedSecretHex
+        _ -> assertFailure "expected 5 shared secrets"
 
 testPacketStructure :: TestTree
 testPacketStructure = testCase "produces valid packet structure" $ do
-  let Just pub0 = Secp256k1.parse_point (fromHex hop0PubKeyHex)
-      Just pub1 = Secp256k1.parse_point (fromHex hop1PubKeyHex)
-      emptyPayload = HopPayload Nothing Nothing Nothing Nothing
+  pub0 <- demand "parse_point" $
+    Secp256k1.parse_point (fromHex hop0PubKeyHex)
+  pub1 <- demand "parse_point" $
+    Secp256k1.parse_point (fromHex hop1PubKeyHex)
+  let emptyPayload = HopPayload Nothing Nothing Nothing Nothing
                        Nothing Nothing []
       hops = [Hop pub0 emptyPayload, Hop pub1 emptyPayload]
       result = construct sessionKey hops ""
@@ -458,16 +471,17 @@ testPacketStructure = testCase "produces valid packet structure" $ do
       BS.length (opEphemeralKey packet) @?= pubkeySize
       BS.length (opHopPayloads packet) @?= hopPayloadsSize
       BS.length (opHmac packet) @?= hmacSize
-      -- The ephemeral key should be the public key derived from session key
-      let Just sk = Secp256k1.roll32 sessionKey
-          Just expectedPub = Secp256k1.derive_pub sk
-          expectedPubBytes = Secp256k1.serialize_point expectedPub
+      sk <- demand "roll32" $ Secp256k1.roll32 sessionKey
+      expectedPub <- demand "derive_pub" $
+        Secp256k1.derive_pub sk
+      let expectedPubBytes = Secp256k1.serialize_point expectedPub
       opEphemeralKey packet @?= expectedPubBytes
 
 testSingleHop :: TestTree
 testSingleHop = testCase "constructs single-hop packet" $ do
-  let Just pub0 = Secp256k1.parse_point (fromHex hop0PubKeyHex)
-      payload = HopPayload
+  pub0 <- demand "parse_point" $
+    Secp256k1.parse_point (fromHex hop0PubKeyHex)
+  let payload = HopPayload
         { hpAmtToForward = Just 1000
         , hpOutgoingCltv = Just 500000
         , hpShortChannelId = Nothing
@@ -486,7 +500,8 @@ testSingleHop = testCase "constructs single-hop packet" $ do
       let encoded = encodeOnionPacket packet
       BS.length encoded @?= onionPacketSize
       -- Should decode back
-      let Just decoded = decodeOnionPacket encoded
+      decoded <- demand "decodeOnionPacket" $
+        decodeOnionPacket encoded
       decoded @?= packet
 
 -- Process tests -------------------------------------------------------------
@@ -560,8 +575,9 @@ testHmacValidation :: TestTree
 testHmacValidation = testGroup "HMAC validation" [
     testCase "reject invalid HMAC" $ do
       -- Use a valid ephemeral key but wrong HMAC
-      let Just hop0PubKey = Secp256k1.parse_point (fromHex hop0PubKeyHex)
-          ephKeyBytes = Secp256k1.serialize_point hop0PubKey
+      hop0PubKey <- demand "parse_point" $
+        Secp256k1.parse_point (fromHex hop0PubKeyHex)
+      let ephKeyBytes = Secp256k1.serialize_point hop0PubKey
           packet = OnionPacket
             { opVersion = 0x00
             , opEphemeralKey = ephKeyBytes
@@ -581,12 +597,9 @@ testProcessBasic = testGroup "basic processing" [
     testCase "process valid packet (final hop, all-zero next HMAC)" $ do
       -- Construct a valid packet for a final hop
       -- The hop payload needs to be properly formatted TLV
-      let Just hop0PubKey = Secp256k1.parse_point (fromHex hop0PubKeyHex)
-          ephKeyBytes = Secp256k1.serialize_point hop0PubKey
-
-          -- Create a minimal hop payload TLV
-          -- amt_to_forward (type 2) = 1000 msat
-          -- outgoing_cltv (type 4) = 500000
+      hop0PubKey <- demand "parse_point" $
+        Secp256k1.parse_point (fromHex hop0PubKeyHex)
+      let ephKeyBytes = Secp256k1.serialize_point hop0PubKey
           hopPayloadTlv = encodeHopPayload HopPayload
             { hpAmtToForward = Just 1000
             , hpOutgoingCltv = Just 500000
@@ -596,29 +609,22 @@ testProcessBasic = testGroup "basic processing" [
             , hpCurrentPathKey = Nothing
             , hpUnknownTlvs = []
             }
-
-          -- Length-prefixed payload followed by all-zero HMAC (final hop)
           payloadLen = BS.length hopPayloadTlv
           lenPrefix = encodeBigSize (fromIntegral payloadLen)
           payloadWithHmac = lenPrefix <> hopPayloadTlv
-            <> BS.replicate 32 0x00  -- Zero HMAC = final hop
-
-          -- Pad to 1300 bytes
-          padding = BS.replicate (1300 - BS.length payloadWithHmac) 0x00
+            <> BS.replicate 32 0x00
+          padding = BS.replicate
+            (1300 - BS.length payloadWithHmac) 0x00
           rawPayloads = payloadWithHmac <> padding
-
-          -- Compute shared secret and encrypt payloads
-          Just ss = computeSharedSecret sessionKey hop0PubKey
-          rhoKey = deriveRho ss
+      ss <- demand "computeSharedSecret" $
+        computeSharedSecret sessionKey hop0PubKey
+      let rhoKey = deriveRho ss
           muKey = deriveMu ss
-
-          -- Encrypt: XOR with keystream
           stream = generateStream rhoKey 1300
-          encryptedPayloads = BS.pack (BS.zipWith xor rawPayloads stream)
-
-          -- Compute correct HMAC
-          correctHmac = computeHmac muKey encryptedPayloads BS.empty
-
+          encryptedPayloads =
+            BS.pack (BS.zipWith xor rawPayloads stream)
+          correctHmac =
+            computeHmac muKey encryptedPayloads BS.empty
           packet = OnionPacket
             { opVersion = 0x00
             , opEphemeralKey = ephKeyBytes
@@ -822,9 +828,15 @@ testNodeSecKey2 = makeSecKey 0x22
 testNodeSecKey3 = makeSecKey 0x33
 
 testNodePubKey1, testNodePubKey2, testNodePubKey3 :: Secp256k1.Projective
-Just testNodePubKey1 = makePubKey 0x11
-Just testNodePubKey2 = makePubKey 0x22
-Just testNodePubKey3 = makePubKey 0x33
+testNodePubKey1 = case makePubKey 0x11 of
+  Just pk -> pk
+  Nothing -> error "testNodePubKey1: invalid key"
+testNodePubKey2 = case makePubKey 0x22 of
+  Just pk -> pk
+  Nothing -> error "testNodePubKey2: invalid key"
+testNodePubKey3 = case makePubKey 0x33 of
+  Just pk -> pk
+  Nothing -> error "testNodePubKey3: invalid key"
 
 testSharedSecretBS :: SharedSecret
 testSharedSecretBS = SharedSecret (BS.pack [0x42..0x61])
@@ -889,10 +901,11 @@ blindingKeyDerivationTests = testGroup "key derivation" [
 
 -- | Derive the public key for testSeed
 testSeedPubKey :: Secp256k1.Projective
-testSeedPubKey =
-  let Just sk = Secp256k1.roll32 testSeed
-      Just pk = Secp256k1.derive_pub sk
-  in  pk
+testSeedPubKey = case Secp256k1.roll32 testSeed of
+  Nothing -> error "testSeedPubKey: invalid seed"
+  Just sk -> case Secp256k1.derive_pub sk of
+    Nothing -> error "testSeedPubKey: invalid key"
+    Just pk -> pk
 
 blindingEphemeralKeyTests :: TestTree
 blindingEphemeralKeyTests = testGroup "ephemeral key iteration" [
@@ -910,8 +923,9 @@ blindingEphemeralKeyTests = testGroup "ephemeral key iteration" [
       case nextEphemeral testSeed testSeedPubKey testSharedSecretBS of
         Nothing -> assertFailure "nextEphemeral returned Nothing"
         Just (newSecKey, newPubKey) -> do
-          let Just sk = Secp256k1.roll32 newSecKey
-              Just derivedPub = Secp256k1.derive_pub sk
+          sk <- demand "roll32" $ Secp256k1.roll32 newSecKey
+          derivedPub <- demand "derive_pub" $
+            Secp256k1.derive_pub sk
           derivedPub @?= newPubKey
 
   , testCase "nextEphemeral is deterministic" $ do
@@ -1071,14 +1085,16 @@ blindingProcessHopTests = testGroup "processBlindedHop" [
                    (testNodePubKey2, emptyHopData)]
       case createBlindedPath testSeed nodes of
         Left err -> assertFailure $ "createBlindedPath failed: " ++ show err
-        Right path -> do
-          let firstHop = head (bpBlindedHops path)
-              pathKey = bpBlindingKey path
-          case processBlindedHop testNodeSecKey1 pathKey
-                 (bhEncryptedData firstHop) of
-            Left err -> assertFailure $
-              "processBlindedHop failed: " ++ show err
-            Right (decryptedData, _) -> decryptedData @?= sampleHopData
+        Right path -> case bpBlindedHops path of
+          firstHop : _ -> do
+            let pathKey = bpBlindingKey path
+            case processBlindedHop testNodeSecKey1 pathKey
+                   (bhEncryptedData firstHop) of
+              Left err -> assertFailure $
+                "processBlindedHop failed: " ++ show err
+              Right (decryptedData, _) ->
+                decryptedData @?= sampleHopData
+          [] -> assertFailure "expected non-empty hops"
 
   , testCase "process hop chain correctly" $ do
       let nodes = [ (testNodePubKey1, emptyHopData)
@@ -1087,59 +1103,66 @@ blindingProcessHopTests = testGroup "processBlindedHop" [
                   ]
       case createBlindedPath testSeed nodes of
         Left err -> assertFailure $ "createBlindedPath failed: " ++ show err
-        Right path -> do
-          let [hop1, hop2, hop3] = bpBlindedHops path
-              pathKey1 = bpBlindingKey path
-
-          case processBlindedHop testNodeSecKey1 pathKey1
-                 (bhEncryptedData hop1) of
-            Left err -> assertFailure $
-              "processBlindedHop hop1 failed: " ++ show err
-            Right (data1, pathKey2) -> do
-              data1 @?= emptyHopData
-
-              case processBlindedHop testNodeSecKey2 pathKey2
-                     (bhEncryptedData hop2) of
-                Left err -> assertFailure $
-                  "processBlindedHop hop2 failed: " ++ show err
-                Right (data2, pathKey3) -> do
-                  data2 @?= sampleHopData
-
-                  case processBlindedHop testNodeSecKey3 pathKey3
-                         (bhEncryptedData hop3) of
-                    Left err -> assertFailure $
-                      "processBlindedHop hop3 failed: " ++ show err
-                    Right (data3, _) -> data3 @?= hopDataWithNextNode
+        Right path -> case bpBlindedHops path of
+          [hop1, hop2, hop3] -> do
+            let pathKey1 = bpBlindingKey path
+            case processBlindedHop testNodeSecKey1 pathKey1
+                   (bhEncryptedData hop1) of
+              Left err -> assertFailure $
+                "processBlindedHop hop1 failed: " ++ show err
+              Right (data1, pathKey2) -> do
+                data1 @?= emptyHopData
+                case processBlindedHop testNodeSecKey2 pathKey2
+                       (bhEncryptedData hop2) of
+                  Left err -> assertFailure $
+                    "processBlindedHop hop2 failed: "
+                      ++ show err
+                  Right (data2, pathKey3) -> do
+                    data2 @?= sampleHopData
+                    case processBlindedHop testNodeSecKey3
+                           pathKey3
+                           (bhEncryptedData hop3) of
+                      Left err -> assertFailure $
+                        "processBlindedHop hop3 failed: "
+                          ++ show err
+                      Right (data3, _) ->
+                        data3 @?= hopDataWithNextNode
+          _ -> assertFailure "expected 3 blinded hops"
 
   , testCase "process hop with wrong node key fails" $ do
       let nodes = [(testNodePubKey1, sampleHopData)]
       case createBlindedPath testSeed nodes of
-        Left err -> assertFailure $ "createBlindedPath failed: " ++ show err
-        Right path -> do
-          let firstHop = head (bpBlindedHops path)
-              pathKey = bpBlindingKey path
-          case processBlindedHop testNodeSecKey2 pathKey
-                 (bhEncryptedData firstHop) of
-            Left _ -> return ()
-            Right (decryptedData, _) ->
-              assertBool "should not decrypt correctly"
-                (decryptedData /= sampleHopData)
+        Left err -> assertFailure $
+          "createBlindedPath failed: " ++ show err
+        Right path -> case bpBlindedHops path of
+          firstHop : _ -> do
+            let pathKey = bpBlindingKey path
+            case processBlindedHop testNodeSecKey2 pathKey
+                   (bhEncryptedData firstHop) of
+              Left _ -> return ()
+              Right (decryptedData, _) ->
+                assertBool "should not decrypt correctly"
+                  (decryptedData /= sampleHopData)
+          [] -> assertFailure "expected non-empty hops"
 
   , testCase "next path key is valid point" $ do
       let nodes = [(testNodePubKey1, emptyHopData),
                    (testNodePubKey2, emptyHopData)]
       case createBlindedPath testSeed nodes of
-        Left err -> assertFailure $ "createBlindedPath failed: " ++ show err
-        Right path -> do
-          let firstHop = head (bpBlindedHops path)
-              pathKey = bpBlindingKey path
-          case processBlindedHop testNodeSecKey1 pathKey
-                 (bhEncryptedData firstHop) of
-            Left err -> assertFailure $
-              "processBlindedHop failed: " ++ show err
-            Right (_, nextPathKey) -> do
-              let serialized = Secp256k1.serialize_point nextPathKey
-              BS.length serialized @?= 33
+        Left err -> assertFailure $
+          "createBlindedPath failed: " ++ show err
+        Right path -> case bpBlindedHops path of
+          firstHop : _ -> do
+            let pathKey = bpBlindingKey path
+            case processBlindedHop testNodeSecKey1 pathKey
+                   (bhEncryptedData firstHop) of
+              Left err -> assertFailure $
+                "processBlindedHop failed: " ++ show err
+              Right (_, nextPathKey) -> do
+                let serialized =
+                      Secp256k1.serialize_point nextPathKey
+                BS.length serialized @?= 33
+          [] -> assertFailure "expected non-empty hops"
 
   , testCase "next_path_key_override is used when present" $ do
       let overrideKey = Secp256k1.serialize_point testNodePubKey3
@@ -1148,15 +1171,18 @@ blindingProcessHopTests = testGroup "processBlindedHop" [
           nodes = [(testNodePubKey1, hopDataWithOverride'),
                    (testNodePubKey2, emptyHopData)]
       case createBlindedPath testSeed nodes of
-        Left err -> assertFailure $ "createBlindedPath failed: " ++ show err
-        Right path -> do
-          let firstHop = head (bpBlindedHops path)
-              pathKey = bpBlindingKey path
-          case processBlindedHop testNodeSecKey1 pathKey
-                 (bhEncryptedData firstHop) of
-            Left err -> assertFailure $
-              "processBlindedHop failed: " ++ show err
-            Right (decryptedData, nextPathKey) -> do
-              bhdNextPathKeyOverride decryptedData @?= Just overrideKey
-              nextPathKey @?= testNodePubKey3
+        Left err -> assertFailure $
+          "createBlindedPath failed: " ++ show err
+        Right path -> case bpBlindedHops path of
+          firstHop : _ -> do
+            let pathKey = bpBlindingKey path
+            case processBlindedHop testNodeSecKey1 pathKey
+                   (bhEncryptedData firstHop) of
+              Left err -> assertFailure $
+                "processBlindedHop failed: " ++ show err
+              Right (decryptedData, nextPathKey) -> do
+                bhdNextPathKeyOverride decryptedData
+                  @?= Just overrideKey
+                nextPathKey @?= testNodePubKey3
+          [] -> assertFailure "expected non-empty hops"
   ]
