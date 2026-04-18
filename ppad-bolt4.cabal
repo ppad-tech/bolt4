@@ -9,6 +9,7 @@ maintainer:         jared@ppad.tech
 category:           Cryptography
 build-type:         Simple
 tested-with:        GHC == 9.10.3
+extra-doc-files:    CHANGELOG
 description:
   A pure Haskell implementation of BOLT4 (onion routing) from
   the Lightning Network protocol specification.
