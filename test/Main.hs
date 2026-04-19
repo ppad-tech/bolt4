@@ -6,7 +6,7 @@ import Data.Bits (xor)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Base16 as B16
 import qualified Crypto.Curve.Secp256k1 as Secp256k1
-import Data.Word (Word8)
+import Data.Word (Word8, Word16, Word32)
 import Lightning.Protocol.BOLT4.Blinding
 import Lightning.Protocol.BOLT4.Codec
 import Lightning.Protocol.BOLT4.Construct
@@ -22,6 +22,17 @@ import Test.Tasty.QuickCheck
 demand :: String -> Maybe a -> IO a
 demand _ (Just a) = pure a
 demand msg Nothing = assertFailure msg
+
+-- | Construct a ShortChannelId, failing if invalid.
+assertScid :: Word32 -> Word32 -> Word16
+           -> IO ShortChannelId
+assertScid b t o = demand "shortChannelId" (shortChannelId b t o)
+
+-- | Construct a ShortChannelId for test fixtures.
+mkScid :: Word32 -> Word32 -> Word16 -> ShortChannelId
+mkScid b t o = case shortChannelId b t o of
+  Just s  -> s
+  Nothing -> error "mkScid: invalid test fixture"
 
 main :: IO ()
 main = defaultMain $ testGroup "ppad-bolt4" [
@@ -162,26 +173,27 @@ tlvTests = testGroup "encoding/decoding" [
 sciTests :: TestTree
 sciTests = testGroup "encoding/decoding" [
     testCase "known value" $ do
-      let sci = ShortChannelId 700000 1234 5
-          encoded = encodeShortChannelId sci
+      sci <- assertScid 700000 1234 5
+      let encoded = encodeShortChannelId sci
       BS.length encoded @?= 8
       let decoded = decodeShortChannelId encoded
       decoded @?= Just sci
   , testCase "maximum values" $ do
-      let sci = ShortChannelId 0xFFFFFF 0xFFFFFF 0xFFFF
-          encoded = encodeShortChannelId sci
+      sci <- assertScid 0xFFFFFF 0xFFFFFF 0xFFFF
+      let encoded = encodeShortChannelId sci
       BS.length encoded @?= 8
       let decoded = decodeShortChannelId encoded
       decoded @?= Just sci
   , testCase "zero values" $ do
-      let sci = ShortChannelId 0 0 0
-          encoded = encodeShortChannelId sci
+      sci <- assertScid 0 0 0
+      let encoded = encodeShortChannelId sci
           expected = BS.pack [0, 0, 0, 0, 0, 0, 0, 0]
       encoded @?= expected
       let decoded = decodeShortChannelId encoded
       decoded @?= Just sci
   , testCase "reject wrong length" $ do
-      let decoded = decodeShortChannelId (BS.pack [0, 1, 2, 3, 4, 5, 6])
+      let decoded =
+            decodeShortChannelId (BS.pack [0, 1, 2, 3, 4, 5, 6])
       decoded @?= Nothing
   ]
 
@@ -848,7 +860,7 @@ emptyHopData = BlindedHopData
 sampleHopData :: BlindedHopData
 sampleHopData = BlindedHopData
   { bhdPadding = Nothing
-  , bhdShortChannelId = Just (ShortChannelId 700000 1234 0)
+  , bhdShortChannelId = Just (mkScid 700000 1234 0)
   , bhdNextNodeId = Nothing
   , bhdPathId = Just (BS.pack [0x42, 0x42])
   , bhdNextPathKeyOverride = Nothing
