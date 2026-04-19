@@ -46,7 +46,7 @@ module Lightning.Protocol.BOLT4.Codec (
   , decodeWord32TU
   ) where
 
-import Data.Bits (shiftL, shiftR, (.&.))
+import Data.Bits (shiftL)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Builder as B
 import qualified Data.ByteString.Lazy as BL
@@ -225,39 +225,25 @@ parseHopPayload = go emptyHop
 
 -- ShortChannelId -----------------------------------------------------------
 
--- | Encode ShortChannelId to 8 bytes.
--- Format: 3 bytes block || 3 bytes tx || 2 bytes output (all BE)
+-- | Encode ShortChannelId to 8 bytes big-endian.
 encodeShortChannelId :: ShortChannelId -> BS.ByteString
-encodeShortChannelId (ShortChannelId !blk !tx !out) = toStrict $
-  -- Block height: 3 bytes
-  B.word8 (fromIntegral (blk `shiftR` 16) .&. 0xFF) <>
-  B.word8 (fromIntegral (blk `shiftR` 8) .&. 0xFF) <>
-  B.word8 (fromIntegral blk .&. 0xFF) <>
-  -- Tx index: 3 bytes
-  B.word8 (fromIntegral (tx `shiftR` 16) .&. 0xFF) <>
-  B.word8 (fromIntegral (tx `shiftR` 8) .&. 0xFF) <>
-  B.word8 (fromIntegral tx .&. 0xFF) <>
-  -- Output index: 2 bytes
-  B.word16BE out
+encodeShortChannelId !sci = toStrict (B.word64BE (scidWord64 sci))
 {-# INLINE encodeShortChannelId #-}
 
--- | Decode ShortChannelId from 8 bytes.
+-- | Decode ShortChannelId from 8 bytes big-endian.
 decodeShortChannelId :: BS.ByteString -> Maybe ShortChannelId
 decodeShortChannelId !bs
   | BS.length bs /= 8 = Nothing
   | otherwise =
-      let !b0 = fromIntegral (BS.index bs 0) :: Word32
-          !b1 = fromIntegral (BS.index bs 1) :: Word32
-          !b2 = fromIntegral (BS.index bs 2) :: Word32
-          !blk = (b0 `shiftL` 16) + (b1 `shiftL` 8) + b2
-          !t0 = fromIntegral (BS.index bs 3) :: Word32
-          !t1 = fromIntegral (BS.index bs 4) :: Word32
-          !t2 = fromIntegral (BS.index bs 5) :: Word32
-          !tx = (t0 `shiftL` 16) + (t1 `shiftL` 8) + t2
-          !o0 = fromIntegral (BS.index bs 6) :: Word16
-          !o1 = fromIntegral (BS.index bs 7) :: Word16
-          !out = (o0 `shiftL` 8) + o1
-      in  Just (ShortChannelId blk tx out)
+      let !w = (fromIntegral (BS.index bs 0) `shiftL` 56)
+            + (fromIntegral (BS.index bs 1) `shiftL` 48)
+            + (fromIntegral (BS.index bs 2) `shiftL` 40)
+            + (fromIntegral (BS.index bs 3) `shiftL` 32)
+            + (fromIntegral (BS.index bs 4) `shiftL` 24)
+            + (fromIntegral (BS.index bs 5) `shiftL` 16)
+            + (fromIntegral (BS.index bs 6) `shiftL` 8)
+            +  fromIntegral (BS.index bs 7) :: Word64
+      in  Just (ShortChannelId w)
 {-# INLINE decodeShortChannelId #-}
 
 -- Failure messages ---------------------------------------------------------

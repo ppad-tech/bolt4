@@ -16,6 +16,11 @@ module Lightning.Protocol.BOLT4.Types (
     OnionPacket(..)
   , HopPayload(..)
   , ShortChannelId(..)
+  , shortChannelId
+  , scidBlockHeight
+  , scidTxIndex
+  , scidOutputIndex
+  , scidWord64
   , PaymentData(..)
   , TlvRecord(..)
 
@@ -67,6 +72,10 @@ import Data.Bits ((.&.), (.|.))
 import qualified Data.ByteString as BS
 import Data.Word (Word8, Word16, Word32, Word64)
 import GHC.Generics (Generic)
+import Lightning.Protocol.BOLT1.Prim
+  ( ShortChannelId(..), shortChannelId
+  , scidBlockHeight, scidTxIndex, scidOutputIndex, scidWord64
+  )
 
 -- Packet types -------------------------------------------------------------
 
@@ -87,13 +96,6 @@ data HopPayload = HopPayload
   , hpEncryptedData  :: !(Maybe BS.ByteString)  -- ^ TLV type 10
   , hpCurrentPathKey :: !(Maybe BS.ByteString)  -- ^ TLV type 12
   , hpUnknownTlvs    :: ![TlvRecord]            -- ^ Unknown types
-  } deriving (Eq, Show, Generic)
-
--- | Short channel ID (8 bytes): block height, tx index, output index.
-data ShortChannelId = ShortChannelId
-  { sciBlockHeight :: {-# UNPACK #-} !Word32  -- ^ 3 bytes in encoding
-  , sciTxIndex     :: {-# UNPACK #-} !Word32  -- ^ 3 bytes in encoding
-  , sciOutputIndex :: {-# UNPACK #-} !Word16  -- ^ 2 bytes in encoding
   } deriving (Eq, Show, Generic)
 
 -- | Payment data for final hop (TLV type 8).
