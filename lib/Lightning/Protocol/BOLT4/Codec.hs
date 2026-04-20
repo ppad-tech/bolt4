@@ -159,23 +159,28 @@ encodeTlvStream !recs = toStrict $ foldMap (B.byteString . encodeTlv) recs
 
 -- | Serialize OnionPacket to 1366 bytes.
 encodeOnionPacket :: OnionPacket -> BS.ByteString
-encodeOnionPacket (OnionPacket !ver !eph !payloads !mac) = toStrict $
-  B.word8 ver <>
-  B.byteString eph <>
-  B.byteString payloads <>
-  B.byteString mac
+encodeOnionPacket (OnionPacket !ver !eph !payloads !mac) =
+  toStrict $
+    B.word8 ver <>
+    B.byteString eph <>
+    B.byteString (unHopPayloads payloads) <>
+    B.byteString (unHmac32 mac)
 {-# INLINE encodeOnionPacket #-}
 
 -- | Parse OnionPacket from 1366 bytes.
 decodeOnionPacket :: BS.ByteString -> Maybe OnionPacket
 decodeOnionPacket !bs
   | BS.length bs /= onionPacketSize = Nothing
-  | otherwise =
+  | otherwise = do
       let !ver = BS.index bs 0
           !eph = BS.take pubkeySize (BS.drop 1 bs)
-          !payloads = BS.take hopPayloadsSize (BS.drop (1 + pubkeySize) bs)
-          !mac = BS.drop (1 + pubkeySize + hopPayloadsSize) bs
-      in  Just (OnionPacket ver eph payloads mac)
+          !payloadsRaw = BS.take hopPayloadsSize
+                           (BS.drop (1 + pubkeySize) bs)
+          !macRaw = BS.drop
+                      (1 + pubkeySize + hopPayloadsSize) bs
+      hp <- hopPayloads payloadsRaw
+      hm <- hmac32 macRaw
+      Just (OnionPacket ver eph hp hm)
 {-# INLINE decodeOnionPacket #-}
 
 -- | Encode HopPayload to bytes (without length prefix).
@@ -358,7 +363,7 @@ decodeWord32TU !bs
 -- | Encode PaymentData.
 encodePaymentData :: PaymentData -> BS.ByteString
 encodePaymentData (PaymentData !secret !total) =
-  secret <> encodeWord64TU total
+  unPaymentSecret secret <> encodeWord64TU total
 {-# INLINE encodePaymentData #-}
 
 -- | Decode PaymentData.
@@ -366,8 +371,8 @@ decodePaymentData :: BS.ByteString -> Maybe PaymentData
 decodePaymentData !bs
   | BS.length bs < 32 = Nothing
   | otherwise = do
-      let !secret = BS.take 32 bs
-          !rest = BS.drop 32 bs
+      ps <- paymentSecret (BS.take 32 bs)
+      let !rest = BS.drop 32 bs
       total <- decodeWord64TU rest
-      Just (PaymentData secret total)
+      Just (PaymentData ps total)
 {-# INLINE decodePaymentData #-}
