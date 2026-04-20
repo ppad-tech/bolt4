@@ -62,6 +62,9 @@ main = defaultMain $ testGroup "ppad-bolt4" [
   , testGroup "Error" [
         errorTests
       ]
+  , testGroup "properties" [
+        propertyTests
+      ]
   , testGroup "Blinding" [
         blindingKeyDerivationTests
       , blindingEphemeralKeyTests
@@ -1320,3 +1323,99 @@ blindingProcessHopTests =
                 nextPK @?= testNodePubKey3
           [] -> assertFailure "expected non-empty hops"
   ]
+
+-- Property tests ------------------------------------------------------------
+
+propertyTests :: TestTree
+propertyTests = testGroup "invariants" [
+    testProperty "ShortChannelId encode/decode roundtrip"
+      propScidRoundtrip
+  , testProperty "HopPayload encode/decode roundtrip"
+      propHopPayloadRoundtrip
+  , testProperty "fixed-size newtypes validate length"
+      propNewtypeValidation
+  , testProperty "FailureMessage encode/decode roundtrip"
+      propFailureMessageRoundtrip
+  ]
+
+propScidRoundtrip :: Property
+propScidRoundtrip =
+  forAll (choose (0, 0xFFFFFF)) $ \bh ->
+  forAll (choose (0, 0xFFFFFF)) $ \ti ->
+  forAll arbitrary $ \oi ->
+    case shortChannelId bh ti oi of
+      Nothing -> False
+      Just scid ->
+        let encoded = encodeShortChannelId scid
+        in  decodeShortChannelId encoded == Just scid
+
+propHopPayloadRoundtrip :: Property
+propHopPayloadRoundtrip =
+  forAll genHopPayload $ \hp ->
+    let encoded = encodeHopPayload hp
+    in  decodeHopPayload encoded == Just hp
+
+genHopPayload :: Gen HopPayload
+genHopPayload = do
+  amt <- oneof [pure Nothing, Just <$> arbitrary]
+  cltv <- oneof [pure Nothing, Just <$> arbitrary]
+  sci <- oneof [pure Nothing, genScid]
+  pure HopPayload
+    { hpAmtToForward = amt
+    , hpOutgoingCltv = cltv
+    , hpShortChannelId = sci
+    , hpPaymentData = Nothing
+    , hpEncryptedData = Nothing
+    , hpCurrentPathKey = Nothing
+    , hpUnknownTlvs = []
+    }
+  where
+    genScid :: Gen (Maybe ShortChannelId)
+    genScid = do
+      bh <- choose (0, 0xFFFFFF)
+      ti <- choose (0, 0xFFFFFF)
+      oi <- arbitrary
+      pure (shortChannelId bh ti oi)
+
+propNewtypeValidation :: NonNegative Int -> Property
+propNewtypeValidation (NonNegative n) = property $
+  let len = n `mod` 2000
+      bs = BS.replicate len 0x00
+      h32 = hmac32 bs
+      hp  = hopPayloads bs
+      ps  = paymentSecret bs
+  in  (case h32 of
+         Just _  -> len == 32
+         Nothing -> len /= 32)
+      &&
+      (case hp of
+         Just _  -> len == hopPayloadsSize
+         Nothing -> len /= hopPayloadsSize)
+      &&
+      (case ps of
+         Just _  -> len == 32
+         Nothing -> len /= 32)
+
+propFailureMessageRoundtrip :: Property
+propFailureMessageRoundtrip =
+  forAll genFailureMessage $ \fm ->
+    let encoded = encodeFailureMessage fm
+    in  decodeFailureMessage encoded == Just fm
+
+genFailureMessage :: Gen FailureMessage
+genFailureMessage = do
+  code <- elements
+    [ InvalidRealm
+    , TemporaryNodeFailure
+    , PermanentNodeFailure
+    , InvalidOnionHmac
+    , TemporaryChannelFailure
+    , IncorrectOrUnknownPaymentDetails
+    , AmountBelowMinimum
+    , FeeInsufficient
+    , ExpiryTooSoon
+    , MppTimeout
+    ]
+  dlen <- choose (0, 100 :: Int)
+  dat <- BS.pack <$> vectorOf dlen arbitrary
+  pure (FailureMessage code dat [])

@@ -1,4 +1,5 @@
 {-# OPTIONS_HADDOCK prune #-}
+{-# LANGUAGE PatternSynonyms #-}
 
 -- |
 -- Module: Lightning.Protocol.BOLT4
