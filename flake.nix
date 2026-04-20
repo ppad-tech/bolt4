@@ -120,9 +120,13 @@
             [ llvm clang ];
 
         bolt1 = ppad-bolt1.packages.${system}.default;
+        bolt1-llvm =
+          hlib.addBuildTools
+            (hlib.enableCabalFlag bolt1 "llvm")
+            [ llvm clang ];
 
         hpkgs = pkgs.haskell.packages.ghc910.extend (new: old: {
-          ppad-bolt1 = bolt1;
+          ppad-bolt1 = bolt1-llvm;
           ppad-aead = aead-llvm;
           ppad-base16 = base16-llvm;
           ppad-chacha = chacha-llvm;
