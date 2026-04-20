@@ -12,8 +12,19 @@
 -- Core data types for BOLT4 onion routing.
 
 module Lightning.Protocol.BOLT4.Types (
+    -- * Fixed-size newtypes
+    Hmac32(..)
+  , hmac32
+  , unHmac32
+  , HopPayloads(..)
+  , hopPayloads
+  , unHopPayloads
+  , PaymentSecret(..)
+  , paymentSecret
+  , unPaymentSecret
+
     -- * Packet types
-    OnionPacket(..)
+  , OnionPacket(..)
   , HopPayload(..)
   , ShortChannelId(..)
   , shortChannelId
@@ -76,6 +87,63 @@ import Lightning.Protocol.BOLT1.Prim
   ( ShortChannelId(..), shortChannelId
   , scidBlockHeight, scidTxIndex, scidOutputIndex, scidWord64
   )
+import Lightning.Protocol.BOLT4.Prim (SharedSecret)
+
+-- Fixed-size newtypes -------------------------------------------------------
+
+-- | 32-byte HMAC value.
+newtype Hmac32 = Hmac32 BS.ByteString
+  deriving (Eq, Show, Generic)
+
+-- | Construct an 'Hmac32' from a 32-byte 'BS.ByteString'.
+--
+-- Returns 'Nothing' if the input is not exactly 32 bytes.
+hmac32 :: BS.ByteString -> Maybe Hmac32
+hmac32 !bs
+  | BS.length bs == 32 = Just (Hmac32 bs)
+  | otherwise = Nothing
+{-# INLINE hmac32 #-}
+
+-- | Extract the raw bytes from an 'Hmac32'.
+unHmac32 :: Hmac32 -> BS.ByteString
+unHmac32 (Hmac32 bs) = bs
+{-# INLINE unHmac32 #-}
+
+-- | 1300-byte hop payloads section.
+newtype HopPayloads = HopPayloads BS.ByteString
+  deriving (Eq, Show, Generic)
+
+-- | Construct a 'HopPayloads' from a 1300-byte 'BS.ByteString'.
+--
+-- Returns 'Nothing' if the input is not exactly 1300 bytes.
+hopPayloads :: BS.ByteString -> Maybe HopPayloads
+hopPayloads !bs
+  | BS.length bs == hopPayloadsSize = Just (HopPayloads bs)
+  | otherwise = Nothing
+{-# INLINE hopPayloads #-}
+
+-- | Extract the raw bytes from 'HopPayloads'.
+unHopPayloads :: HopPayloads -> BS.ByteString
+unHopPayloads (HopPayloads bs) = bs
+{-# INLINE unHopPayloads #-}
+
+-- | 32-byte payment secret.
+newtype PaymentSecret = PaymentSecret BS.ByteString
+  deriving (Eq, Show, Generic)
+
+-- | Construct a 'PaymentSecret' from a 32-byte 'BS.ByteString'.
+--
+-- Returns 'Nothing' if the input is not exactly 32 bytes.
+paymentSecret :: BS.ByteString -> Maybe PaymentSecret
+paymentSecret !bs
+  | BS.length bs == 32 = Just (PaymentSecret bs)
+  | otherwise = Nothing
+{-# INLINE paymentSecret #-}
+
+-- | Extract the raw bytes from a 'PaymentSecret'.
+unPaymentSecret :: PaymentSecret -> BS.ByteString
+unPaymentSecret (PaymentSecret bs) = bs
+{-# INLINE unPaymentSecret #-}
 
 -- Packet types -------------------------------------------------------------
 
@@ -83,8 +151,8 @@ import Lightning.Protocol.BOLT1.Prim
 data OnionPacket = OnionPacket
   { opVersion      :: {-# UNPACK #-} !Word8
   , opEphemeralKey :: !BS.ByteString  -- ^ 33 bytes, compressed pubkey
-  , opHopPayloads  :: !BS.ByteString  -- ^ 1300 bytes
-  , opHmac         :: !BS.ByteString  -- ^ 32 bytes
+  , opHopPayloads  :: !HopPayloads    -- ^ 1300 bytes
+  , opHmac         :: !Hmac32         -- ^ 32 bytes
   } deriving (Eq, Show, Generic)
 
 -- | Parsed hop payload after decryption.
@@ -100,7 +168,7 @@ data HopPayload = HopPayload
 
 -- | Payment data for final hop (TLV type 8).
 data PaymentData = PaymentData
-  { pdPaymentSecret :: !BS.ByteString         -- ^ 32 bytes
+  { pdPaymentSecret :: !PaymentSecret          -- ^ 32 bytes
   , pdTotalMsat     :: {-# UNPACK #-} !Word64
   } deriving (Eq, Show, Generic)
 
@@ -235,13 +303,13 @@ data ProcessResult
 data ForwardInfo = ForwardInfo
   { fiNextPacket   :: !OnionPacket
   , fiPayload      :: !HopPayload
-  , fiSharedSecret :: !BS.ByteString  -- ^ For error attribution
+  , fiSharedSecret :: !SharedSecret  -- ^ For error attribution
   } deriving (Eq, Show, Generic)
 
 -- | Information for receiving at final destination.
 data ReceiveInfo = ReceiveInfo
   { riPayload      :: !HopPayload
-  , riSharedSecret :: !BS.ByteString
+  , riSharedSecret :: !SharedSecret
   } deriving (Eq, Show, Generic)
 
 -- Constants ----------------------------------------------------------------

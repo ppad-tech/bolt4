@@ -23,6 +23,7 @@ import Data.Bits (xor)
 import qualified Crypto.Curve.Secp256k1 as Secp256k1
 import qualified Data.ByteString as BS
 import Lightning.Protocol.BOLT4.Codec
+import Lightning.Protocol.BOLT4.Internal
 import Lightning.Protocol.BOLT4.Prim
 import Lightning.Protocol.BOLT4.Types
 
@@ -100,8 +101,8 @@ construct !sessionKey !hops !assocData
               packet = OnionPacket
                 { opVersion = versionByte
                 , opEphemeralKey = ephPubBytes
-                , opHopPayloads = finalPayloads
-                , opHmac = finalHmac
+                , opHopPayloads = unsafeHopPayloads finalPayloads
+                , opHmac = unsafeHmac32 finalHmac
                 }
 
           Right (packet, secrets)
@@ -164,11 +165,13 @@ wrapAllHops !secrets !payloads !filler !assocData !initPayloads =
       !initHmac = BS.replicate hmacSize 0
   in  go numHops initPayloads initHmac paired
   where
-    go !_ !hopPayloads !hmac [] = (hopPayloads, hmac)
-    go !remaining !hopPayloads !hmac ((ss, payload):rest) =
-      let !isLastHop = remaining == length (reverse (zip secrets payloads))
-          (!newPayloads, !newHmac) = wrapHop ss payload hmac hopPayloads
-                                       assocData filler isLastHop
+    go !_ !hpBuf !hmac [] = (hpBuf, hmac)
+    go !remaining !hpBuf !hmac ((ss, payload):rest) =
+      let !isLastHop = remaining ==
+            length (reverse (zip secrets payloads))
+          (!newPayloads, !newHmac) =
+            wrapHop ss payload hmac hpBuf
+              assocData filler isLastHop
       in  go (remaining - 1) newPayloads newHmac rest
 
 -- | Wrap a single hop's payload.
@@ -181,11 +184,11 @@ wrapHop
   -> BS.ByteString
   -> Bool
   -> (BS.ByteString, BS.ByteString)
-wrapHop !ss !payload !hmac !hopPayloads !assocData !filler !isFinalHop =
+wrapHop !ss !payload !hmac !hpBuf !assocData !filler !isFinalHop =
   let !payloadLen = BS.length payload
       !lenBytes = encodeBigSize (fromIntegral payloadLen)
       !shiftSize = BS.length lenBytes + payloadLen + hmacSize
-      !shifted = BS.take (hopPayloadsSize - shiftSize) hopPayloads
+      !shifted = BS.take (hopPayloadsSize - shiftSize) hpBuf
       !prepended = lenBytes <> payload <> hmac <> shifted
       !rhoKey = deriveRho ss
       !stream = generateStream rhoKey hopPayloadsSize
@@ -200,9 +203,9 @@ wrapHop !ss !payload !hmac !hopPayloads !assocData !filler !isFinalHop =
 
 -- | Apply filler to the tail of hop_payloads.
 applyFiller :: BS.ByteString -> BS.ByteString -> BS.ByteString
-applyFiller !hopPayloads !filler =
+applyFiller !hpBuf !filler =
   let !fillerLen = BS.length filler
-      !prefix = BS.take (hopPayloadsSize - fillerLen) hopPayloads
+      !prefix = BS.take (hopPayloadsSize - fillerLen) hpBuf
   in  prefix <> filler
 {-# INLINE applyFiller #-}
 

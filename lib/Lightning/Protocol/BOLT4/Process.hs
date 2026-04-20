@@ -25,6 +25,7 @@ import qualified Data.ByteString as BS
 import Data.Word (Word8)
 import GHC.Generics (Generic)
 import Lightning.Protocol.BOLT4.Codec
+import Lightning.Protocol.BOLT4.Internal
 import Lightning.Protocol.BOLT4.Prim
 import Lightning.Protocol.BOLT4.Types
 
@@ -70,33 +71,35 @@ process !secKey !packet !assocData = do
     else pure ()
 
   -- Step 6: Decrypt hop payloads
-  let !decrypted = decryptPayloads rhoKey (opHopPayloads packet)
+  let !decrypted = decryptPayloads rhoKey
+                     (unHopPayloads (opHopPayloads packet))
 
   -- Step 7: Extract payload
-  (payloadBytes, nextHmac, remaining) <- extractPayload decrypted
+  (payloadBytes, nextHmac, remaining) <-
+    extractPayload decrypted
 
   -- Step 8: Parse payload TLV
-  hopPayload <- case decodeHopPayload payloadBytes of
+  hp <- case decodeHopPayload payloadBytes of
     Nothing -> Left (InvalidPayload "failed to decode TLV")
-    Just hp -> Right hp
+    Just h  -> Right h
 
   -- Step 9: Check if final hop
-  let SharedSecret ssBytes = ss
   if isFinalHop nextHmac
     then Right $! Receive $! ReceiveInfo
-      { riPayload = hopPayload
-      , riSharedSecret = ssBytes
+      { riPayload = hp
+      , riSharedSecret = ss
       }
     else do
       -- Step 10: Prepare forward packet
-      nextPacket <- case prepareForward ephemeral ss remaining nextHmac of
+      nextPacket <- case prepareForward
+                           ephemeral ss remaining nextHmac of
         Nothing -> Left InvalidEphemeralKey
         Just np -> Right np
 
       Right $! Forward $! ForwardInfo
         { fiNextPacket = nextPacket
-        , fiPayload = hopPayload
-        , fiSharedSecret = ssBytes
+        , fiPayload = hp
+        , fiSharedSecret = ss
         }
 
 -- | Validate packet version is 0x00.
@@ -107,7 +110,9 @@ validateVersion !packet
 {-# INLINE validateVersion #-}
 
 -- | Parse and validate ephemeral public key from packet.
-parseEphemeralKey :: OnionPacket -> Either RejectReason Secp256k1.Projective
+parseEphemeralKey
+  :: OnionPacket
+  -> Either RejectReason Secp256k1.Projective
 parseEphemeralKey !packet =
   case Secp256k1.parse_point (opEphemeralKey packet) of
     Nothing  -> Left InvalidEphemeralKey
@@ -137,10 +142,12 @@ xorBytes !a !b = BS.pack (BS.zipWith xor a b)
 
 -- | Extract payload from decrypted buffer.
 --
--- Parses BigSize length prefix, extracts payload bytes and next HMAC.
+-- Parses BigSize length prefix, extracts payload bytes and
+-- next HMAC.
 extractPayload
   :: BS.ByteString
-  -> Either RejectReason (BS.ByteString, BS.ByteString, BS.ByteString)
+  -> Either RejectReason
+       (BS.ByteString, BS.ByteString, BS.ByteString)
      -- ^ (payload_bytes, next_hmac, remaining_hop_payloads)
 extractPayload !decrypted = do
   -- Parse length prefix
@@ -164,33 +171,37 @@ extractPayload !decrypted = do
     then Left (InvalidPayload "insufficient bytes for HMAC")
     else do
       let !nextHmac = BS.take hmacSize afterPayload
-          -- Remaining payloads: skip the HMAC, take first 1300 bytes
-          -- This is already "shifted" by the payload extraction
+          -- Remaining payloads: skip the HMAC, take first
+          -- 1300 bytes. Already "shifted" by payload extraction
           !remaining = BS.drop hmacSize afterPayload
 
       Right (payloadBytes, nextHmac, remaining)
 
 -- | Verify packet HMAC.
 --
--- Computes HMAC over (hop_payloads || associated_data) using mu key
--- and compares with packet's HMAC using constant-time comparison.
+-- Computes HMAC over (hop_payloads || associated_data) using
+-- mu key and compares with packet's HMAC using constant-time
+-- comparison.
 verifyPacketHmac
   :: DerivedKey      -- ^ mu key
   -> OnionPacket     -- ^ packet with HMAC to verify
   -> BS.ByteString   -- ^ associated data
   -> Bool
 verifyPacketHmac !muKey !packet !assocData =
-  let !computed = computeHmac muKey (opHopPayloads packet) assocData
-  in  verifyHmac (opHmac packet) computed
+  let !computed = computeHmac muKey
+                    (unHopPayloads (opHopPayloads packet))
+                    assocData
+  in  verifyHmac (unHmac32 (opHmac packet)) computed
 {-# INLINE verifyPacketHmac #-}
 
 -- | Prepare packet for forwarding to next hop.
 --
--- Computes blinded ephemeral key and constructs next OnionPacket.
+-- Computes blinded ephemeral key and constructs next
+-- OnionPacket.
 prepareForward
   :: Secp256k1.Projective  -- ^ current ephemeral key
   -> SharedSecret          -- ^ shared secret (for blinding)
-  -> BS.ByteString         -- ^ remaining hop_payloads (after shift)
+  -> BS.ByteString         -- ^ remaining hop_payloads
   -> BS.ByteString         -- ^ next HMAC
   -> Maybe OnionPacket
 prepareForward !ephemeral !ss !remaining !nextHmac = do
@@ -208,13 +219,13 @@ prepareForward !ephemeral !ss !remaining !nextHmac = do
   pure $! OnionPacket
     { opVersion = versionByte
     , opEphemeralKey = newEphBytes
-    , opHopPayloads = newPayloads
-    , opHmac = nextHmac
+    , opHopPayloads = unsafeHopPayloads newPayloads
+    , opHmac = unsafeHmac32 nextHmac
     }
 
 -- | Check if this is the final hop.
 --
 -- Final hop is indicated by next_hmac being all zeros.
 isFinalHop :: BS.ByteString -> Bool
-isFinalHop !hmac = hmac == BS.replicate hmacSize 0
+isFinalHop !hm = hm == BS.replicate hmacSize 0
 {-# INLINE isFinalHop #-}
